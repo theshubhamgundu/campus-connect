@@ -1,0 +1,10 @@
+name: campusnet_server
+version: 0.1.0
+publish_to: 'none'
+environment:
+  sdk: '>=2.17.0 <4.0.0'
+dependencies:
+  # Using only Dart SDK libraries (dart:io) for server to keep it lean.
+dev_dependencies:
+  lints: ^3.0.0
+  test: ^1.24.0

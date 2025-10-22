@@ -1,0 +1,30 @@
+name: campusnet_client
+description: CampusNet Flutter client (LAN-only)
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: '>=2.17.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web_socket_channel: ^2.4.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.2
+  file_picker: ^8.0.0
+  flutter_local_notifications: ^17.1.2
+  intl: ^0.19.0
+  font_awesome_flutter: ^10.6.0
+  flutter_spinkit: ^5.2.0
+  cached_network_image: ^3.3.0
+  url_launcher: ^6.2.2
+  share_plus: ^7.2.1
+  flutter_emoji: ^2.5.1
+  image_picker: ^1.0.7
+  permission_handler: ^11.3.0
+  path: ^1.8.3
+
+flutter:
+  uses-material-design: true
