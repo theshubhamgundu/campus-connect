@@ -1,34 +1,17 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../models/chat.dart';
 
-class Message {
-  final String id;
-  final String senderId;
-  final String text;
-  final DateTime timestamp;
-  final bool isMe;
-  final bool isRead;
-
-  Message({
-    required this.id,
-    required this.senderId,
-    required this.text,
-    required this.timestamp,
-    required this.isMe,
-    this.isRead = false,
-  });
-}
 
 class ChatScreen extends StatefulWidget {
   final Chat chat;
-  final Function(Map<String, dynamic>) onSendMessage;
+  final Function(Message) onSendMessage;
   final Function(File) onSendImage;
   final Function(File) onSendFile;
   final Function(String, String) onUpdateProfile;
@@ -126,12 +109,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
-    final message = {
-      'type': 'message',
-      'to': widget.chat.id,
-      'text': text,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-    };
+    final message = Message(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      senderId: widget.currentUserId,
+      text: text,
+      timestamp: DateTime.now(),
+      isRead: false,
+    );
 
     widget.onSendMessage(message);
     _messageController.clear();

@@ -99,7 +99,7 @@ class ProfileScreen extends StatelessWidget {
                       // TODO: Implement logout
                     },
                     style: ElevatedButton.styleFrom(
-                      primary: const Color(0xFF128C7E),
+                      backgroundColor: const Color(0xFF128C7E),
                       minimumSize: const Size(double.infinity, 50),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(25),

@@ -1,16 +1,24 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:flutter_spinkit/flutter_spinkit.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import 'package:hive/hive.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+// Conditional imports for mobile-only packages
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+// Hive is not web-compatible, so we'll conditionally import it
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive/hive.dart';
+import 'screens/onboarding/onboarding_screen.dart';
+import 'screens/login_screen.dart';
 
 // Screens
 import 'screens/splash_screen.dart';
@@ -42,110 +50,209 @@ class _IncomingFile {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Set preferred orientations
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
+  // Initialize SharedPreferences
+  final prefs = await SharedPreferences.getInstance();
   
-  // Initialize Hive
-  await Hive.initFlutter();
-  await Hive.openBox('feed');
-
-  // Initialize notifications
-  final notifications = FlutterLocalNotificationsPlugin();
-  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-  await notifications.initialize(
-    const InitializationSettings(android: androidInit),
-    onDidReceiveNotificationResponse: (NotificationResponse response) {
-      // Handle notification tap
-    },
+  // Initialize platform-specific services
+  try {
+    // Only initialize Hive on mobile platforms
+    if (!kIsWeb) {
+      try {
+        final appDocumentDir = await getApplicationDocumentsDirectory();
+        await Hive.initFlutter(appDocumentDir.path);
+        await Hive.openBox('messages');
+      } catch (e) {
+        debugPrint('Error initializing Hive: $e');
+      }
+    } else {
+      debugPrint('Web platform detected - using web-compatible storage');
+    }
+    
+    // Initialize notifications only on mobile
+    if (!kIsWeb) {
+      try {
+        const AndroidInitializationSettings initializationSettingsAndroid =
+            AndroidInitializationSettings('@mipmap/ic_launcher');
+            
+        final InitializationSettings initializationSettings = InitializationSettings(
+          android: initializationSettingsAndroid,
+        );
+        
+        final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+            FlutterLocalNotificationsPlugin();
+            
+        await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+      } catch (e) {
+        debugPrint('Error initializing notifications: $e');
+      }
+    }
+  } catch (e) {
+    debugPrint('Error during initialization: $e');
+  }
+  
+  // Define the purple theme
+  final ThemeData purpleTheme = ThemeData(
+    primaryColor: Colors.purple[700],
+    primaryColorDark: Colors.purple[900],
+    primaryColorLight: Colors.purple[100],
+    colorScheme: ColorScheme.light(
+      primary: Colors.purple[700]!,
+      secondary: Colors.purple[500]!,
+      onPrimary: Colors.white,
+    ),
+    appBarTheme: AppBarTheme(
+      backgroundColor: Colors.purple[700],
+      foregroundColor: Colors.white,
+      elevation: 0,
+    ),
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      backgroundColor: Colors.purple[700],
+      foregroundColor: Colors.white,
+    ),
+    bottomNavigationBarTheme: BottomNavigationBarThemeData(
+      selectedItemColor: Colors.purple[700],
+      unselectedItemColor: Colors.grey[600],
+      showUnselectedLabels: true,
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.purple[700],
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+        ),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: Colors.purple[700]!),
+      ),
+    ),
   );
-  
-  // Request notification permission on Android 13+
-  await notifications.resolvePlatformSpecificImplementation<
-    AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
 
-  runApp(const CampusNetApp());
+  // Run the app with the purple theme
+  runApp(
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: purpleTheme,
+      home: const SplashScreen(),
+    ),
+  );
+  // runApp(CampusNetApp(prefs: prefs));
 }
 
 class CampusNetApp extends StatelessWidget {
-  const CampusNetApp({Key? key}) : super(key: key);
+  final SharedPreferences prefs;
+  
+  const CampusNetApp({Key? key, required this.prefs}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = prefs.getBool('darkMode') ?? false;
+    final isFirstLaunch = prefs.getBool('onboarding_complete') ?? true;
+    
+    // WhatsApp color scheme
+    final lightTheme = ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.light,
+      primaryColor: const Color(0xFF128C7E), // WhatsApp green
+      primaryColorDark: const Color(0xFF075E54), // Darker green
+      primaryColorLight: const Color(0xFF25D366), // Light green
+      scaffoldBackgroundColor: const Color(0xFFE5E5E5), // Light gray background
+      colorScheme: const ColorScheme.light(
+        primary: Color(0xFF128C7E),
+        secondary: Color(0xFF25D366),
+        surface: Colors.white,
+        background: Color(0xFFE5E5E5),
+        onBackground: Colors.black87,
+        onSurface: Colors.black87,
+      ),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Color(0xFF128C7E),
+        elevation: 0,
+        titleTextStyle: TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.w500,
+        ),
+        iconTheme: IconThemeData(color: Colors.white),
+        actionsIconTheme: IconThemeData(color: Colors.white),
+      ),
+      floatingActionButtonTheme: const FloatingActionButtonThemeData(
+        backgroundColor: Color(0xFF25D366), // WhatsApp green
+        foregroundColor: Colors.white,
+      ),
+      textTheme: TextTheme(
+        displayLarge: const TextStyle(color: Colors.black87, fontSize: 28, fontWeight: FontWeight.bold),
+        displayMedium: const TextStyle(color: Colors.black87, fontSize: 24, fontWeight: FontWeight.bold),
+        titleLarge: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.bold),
+        bodyLarge: const TextStyle(color: Colors.black87, fontSize: 14),
+        bodyMedium: const TextStyle(color: Colors.black54, fontSize: 14),
+        bodySmall: TextStyle(color: Colors.grey[600], fontSize: 12),
+      ),
+      cardTheme: CardThemeData(
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+
+    final darkTheme = ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.dark,
+      primaryColor: const Color(0xFF075E54), // Darker green
+      primaryColorDark: const Color(0xFF128C7E),
+      primaryColorLight: const Color(0xFF25D366),
+      scaffoldBackgroundColor: const Color(0xFF0F141A), // Dark background
+      colorScheme: const ColorScheme.dark(
+        primary: Color(0xFF075E54),
+        secondary: Color(0xFF25D366),
+        surface: Color(0xFF1F2C34),
+        background: Color(0xFF0F141A),
+        onBackground: Colors.white,
+        onSurface: Colors.white,
+      ),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Color(0xFF1F2C34), // Dark header
+        elevation: 0,
+        titleTextStyle: TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.w500,
+        ),
+        iconTheme: IconThemeData(color: Colors.white),
+        actionsIconTheme: IconThemeData(color: Colors.white),
+      ),
+      floatingActionButtonTheme: const FloatingActionButtonThemeData(
+        backgroundColor: Color(0xFF25D366), // WhatsApp green
+        foregroundColor: Colors.white,
+      ),
+      textTheme: TextTheme(
+        displayLarge: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
+        displayMedium: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+        titleLarge: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+        bodyLarge: const TextStyle(color: Colors.white, fontSize: 14),
+        bodyMedium: const TextStyle(color: Colors.white70, fontSize: 14),
+        bodySmall: TextStyle(color: Colors.grey[400], fontSize: 12),
+      ),
+      cardTheme: CardThemeData(
+        elevation: 0,
+        color: const Color(0xFF1F2C34),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+
     return MaterialApp(
       title: 'CampusNet',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primaryColor: const Color(0xFF075E54),
-        colorScheme: ColorScheme.light(
-          primary: const Color(0xFF075E54),
-          secondary: const Color(0xFF128C7E),
-          surface: Colors.white,
-          background: const Color(0xFFE5E5E5),
-          onPrimary: Colors.white,
-          onSecondary: Colors.white,
-          onSurface: Colors.black87,
-          onBackground: Colors.black87,
-          brightness: Brightness.light,
-        ),
-        scaffoldBackgroundColor: const Color(0xFFE5E5E5),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF075E54),
-          elevation: 0,
-          centerTitle: false,
-          titleTextStyle: TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-          iconTheme: IconThemeData(color: Colors.white),
-          actionsIconTheme: IconThemeData(color: Colors.white),
-        ),
-        floatingActionButtonTheme: const FloatingActionButtonThemeData(
-          backgroundColor: Color(0xFF128C7E),
-          foregroundColor: Colors.white,
-        ),
-        textTheme: const TextTheme(
-          headline6: TextStyle(
-            color: Colors.black87,
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-          ),
-          bodyText1: TextStyle(
-            color: Colors.black87,
-            fontSize: 14,
-          ),
-          bodyText2: TextStyle(
-            color: Colors.grey,
-            fontSize: 12,
-          ),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(25.0),
-            borderSide: BorderSide.none,
-          ),
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 20,
-            vertical: 10,
-          ),
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF128C7E),
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(25.0),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
-          ),
-        ),
-      ),
-      home: const SplashScreen(),
+      theme: lightTheme,
+      darkTheme: darkTheme,
+      themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
+      home: isFirstLaunch ? const OnboardingScreen() : const LoginScreen(),
     );
   }
 }

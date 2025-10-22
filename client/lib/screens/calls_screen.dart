@@ -25,30 +25,34 @@ class CallsScreen extends StatelessWidget {
   const CallsScreen({Key? key}) : super(key: key);
 
   // This would normally come from your data source
-  final List<Call> calls = const [
-    Call(
-      id: '1',
-      name: 'John Doe',
-      avatar: 'assets/images/avatar1.png',
-      time: DateTime.now().subtract(const Duration(minutes: 30)),
-      isIncoming: true,
-      isVideo: false,
-      isMissed: true,
-    ),
-    Call(
-      id: '2',
-      name: 'Jane Smith',
-      avatar: 'assets/images/avatar2.png',
-      time: DateTime.now().subtract(const Duration(hours: 2)),
-      isIncoming: false,
-      isVideo: true,
-      isMissed: false,
-    ),
-    // Add more dummy data as needed
-  ];
+  List<Call> _getCalls() {
+    final now = DateTime.now();
+    return [
+      Call(
+        id: '1',
+        name: 'John Doe',
+        avatar: 'assets/images/avatar1.png',
+        time: now.subtract(const Duration(minutes: 30)),
+        isIncoming: true,
+        isVideo: false,
+        isMissed: true,
+      ),
+      Call(
+        id: '2',
+        name: 'Jane Smith',
+        avatar: 'assets/images/avatar2.png',
+        time: now.subtract(const Duration(hours: 2)),
+        isIncoming: false,
+        isVideo: true,
+        isMissed: false,
+      ),
+      // Add more dummy data as needed
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
+    final calls = _getCalls();
     return ListView.builder(
       itemCount: calls.length,
       itemBuilder: (context, index) {

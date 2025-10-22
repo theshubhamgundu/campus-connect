@@ -14,6 +14,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  bool _isLoading = true;
+  
   final List<Widget> _screens = [
     const ChatsScreen(),
     const StatusScreen(),
@@ -21,7 +23,22 @@ class _HomeScreenState extends State<HomeScreen> {
     const ProfileScreen(),
   ];
 
-  void _onItemTapped(int index) {
+  @override
+  void initState() {
+    super.initState();
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
+    // Add any initialization logic here
+    await Future.delayed(const Duration(milliseconds: 500));
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _onTabTapped(int index) {
+    if (_isLoading) return;
     setState(() {
       _selectedIndex = index;
     });
@@ -32,7 +49,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('CampusNet'),
-        backgroundColor: const Color(0xFF128C7E),
         elevation: 0,
         actions: [
           IconButton(
@@ -43,52 +59,42 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           PopupMenuButton<String>(
             onSelected: (value) {
-              // TODO: Handle menu item selection
+              if (value == 'settings') {
+                // TODO: Navigate to settings
+              } else if (value == 'new_group') {
+                // TODO: Create new group
+              }
             },
-            itemBuilder: (BuildContext context) {
-              return [
-                const PopupMenuItem(
-                  value: 'new_group',
-                  child: Text('New group'),
-                ),
-                const PopupMenuItem(
-                  value: 'settings',
-                  child: Text('Settings'),
-                ),
-              ];
-            },
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                value: 'new_group',
+                child: Text('New group'),
+              ),
+              const PopupMenuItem<String>(
+                value: 'settings',
+                child: Text('Settings'),
+              ),
+            ],
           ),
         ],
       ),
-      body: _screens[_selectedIndex],
-      floatingActionButton: _selectedIndex == 0
-          ? FloatingActionButton(
-              onPressed: () {
-                // TODO: Implement new chat
-              },
-              backgroundColor: const Color(0xFF128C7E),
-              child: const Icon(Icons.chat, color: Colors.white),
-            )
-          : _selectedIndex == 1
-              ? FloatingActionButton(
-                  onPressed: () {
-                    // TODO: Implement new status
-                  },
-                  backgroundColor: const Color(0xFF128C7E),
-                  child: const Icon(Icons.camera_alt, color: Colors.white),
-                )
-              : _selectedIndex == 2
-                  ? FloatingActionButton(
-                      onPressed: () {
-                        // TODO: Implement new call
-                      },
-                      backgroundColor: const Color(0xFF128C7E),
-                      child: const Icon(Icons.add_ic_call, color: Colors.white),
-                    )
-                  : null,
+      body: Container(
+        decoration: BoxDecoration(
+          image: DecorationImage(
+            image: Theme.of(context).brightness == Brightness.light
+                ? const AssetImage('assets/images/chat_bg_light.png')
+                : const AssetImage('assets/images/chat_bg_dark.png'),
+            fit: BoxFit.cover,
+          ),
+        ),
+        child: IndexedStack(
+          index: _selectedIndex,
+          children: _screens,
+        ),
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
+        onTap: _onTabTapped,
         type: BottomNavigationBarType.fixed,
         selectedItemColor: const Color(0xFF128C7E),
         unselectedItemColor: Colors.grey,

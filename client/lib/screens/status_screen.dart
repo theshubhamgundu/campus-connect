@@ -39,10 +39,10 @@ class StatusScreen extends StatelessWidget {
     return ListTile(
       leading: Stack(
         children: [
-          const CircleAvatar(
+          CircleAvatar(
             radius: 30,
             backgroundColor: Colors.grey[300],
-            child: Icon(Icons.person, size: 30, color: Colors.white),
+            child: const Icon(Icons.person, size: 30, color: Colors.white),
           ),
           Positioned(
             bottom: 0,
