@@ -21,29 +21,6 @@ It enables **students and faculty** to connect, chat, share files, and broadcast
 
 ---
 
-## 🧱 System Architecture
-
-pgsql
-Copy code
-    ┌──────────────────────────────┐
-    │   CampusNet Local Server     │
-    │  (Dart Backend / WebSocket)  │
-    └────────────┬─────────────────┘
-                 │
-         [ Local Wi-Fi Router ]
-                 │
-┌────────────┬────────────┬────────────┐
-│ Student A │ Student B │ Faculty C │
-│ (APK App) │ (APK App) │ (Admin App)│
-└────────────┴────────────┴────────────┘
-
-yaml
-Copy code
-
-All communication happens inside the **LAN**, not over the internet.
-
----
-
 ## ⚙️ Tech Stack
 
 | Component | Technology | Purpose |
@@ -76,33 +53,6 @@ All communication happens inside the **LAN**, not over the internet.
 
 ---
 
-## 🗂️ Folder Structure
-
-CampusNet/
-│
-├── server/
-│ ├── server.dart
-│ ├── pubspec.yaml
-│ └── utils/
-│
-├── app/
-│ ├── lib/
-│ │ ├── main.dart
-│ │ ├── screens/
-│ │ ├── models/
-│ │ └── services/
-│ ├── pubspec.yaml
-│ └── assets/
-│
-├── assets/
-│ ├── icons/
-│ ├── images/
-│ └── docs/
-│
-└── README.md
-
-yaml
-Copy code
 
 ---
 
