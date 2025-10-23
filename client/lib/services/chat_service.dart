@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'websocket_service.dart';
 import '../models/message.dart';
-import '../models/call.dart';
 
 class ChatService {
   static final ChatService _instance = ChatService._internal();
@@ -12,7 +11,6 @@ class ChatService {
 
   final WebSocketService _webSocketService = WebSocketService();
   final Map<String, StreamController<Message>> _messageControllers = {};
-  final Map<String, StreamController<Call>> _callControllers = {};
   final Map<String, StreamController<FileTransfer>> _fileTransferControllers = {};
 
   // Initialize the chat service
@@ -23,12 +21,6 @@ class ChatService {
     _webSocketService.addListener(WebSocketService.eventMessage, (data) {
       final message = Message.fromJson(data);
       _handleIncomingMessage(message);
-    });
-
-    // Listen for incoming calls
-    _webSocketService.addListener(WebSocketService.eventCall, (data) {
-      final call = Call.fromJson(data);
-      _handleIncomingCall(call);
     });
 
     // Listen for file transfers
@@ -115,28 +107,6 @@ class ChatService {
     _handleIncomingMessage(message);
   }
 
-  // Initiate a call
-  Future<Call> initiateCall({
-    required String receiverId,
-    required CallType callType,
-  }) async {
-    final call = Call(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      callerId: _webSocketService.userId!,
-      receiverId: receiverId,
-      type: callType,
-      status: CallStatus.ringing,
-      startTime: DateTime.now(),
-    );
-
-    await _webSocketService.send(
-      WebSocketService.eventCall,
-      call.toJson(),
-    );
-
-    return call;
-  }
-
   // Handle incoming messages
   void _handleIncomingMessage(Message message) {
     final chatId = _getChatId(message.senderId, message.receiverId);
@@ -201,14 +171,6 @@ class ChatService {
       _messageControllers[chatId] = StreamController<Message>.broadcast();
     }
     return _messageControllers[chatId]!.stream;
-  }
-
-  // Get call stream
-  Stream<Call> getCallStream(String callId) {
-    if (!_callControllers.containsKey(callId)) {
-      _callControllers[callId] = StreamController<Call>.broadcast();
-    }
-    return _callControllers[callId]!.stream;
   }
 
   // Get file transfer stream

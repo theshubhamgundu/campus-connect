@@ -378,20 +378,6 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.videocam_outlined),
-            onPressed: () {
-              // TODO: Implement video call
-              _handleSettingsAction('video_call');
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.call_outlined),
-            onPressed: () {
-              // TODO: Implement voice call
-              _handleSettingsAction('voice_call');
-            },
-          ),
           PopupMenuButton<String>(
             onSelected: _handleSettingsAction,
             itemBuilder: (BuildContext context) {

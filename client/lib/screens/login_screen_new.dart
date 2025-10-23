@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'home_screen.dart';
+import 'package:provider/provider.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import '../providers/auth_provider.dart';
+import 'forgot_password_screen.dart';
+import '../services/logger_service.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -22,29 +25,35 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() => _isLoading = true);
       
       try {
-        // TODO: Implement actual login logic with your backend
-        await Future.delayed(const Duration(seconds: 1)); // Simulate network call
-        
-        // Save login state
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('isLoggedIn', true);
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        final success = await authProvider.signInWithGoogle();
         
         if (!mounted) return;
         
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const HomeScreen()),
-        );
+        if (success) {
+          Navigator.pushReplacementNamed(context, '/home');
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(authProvider.error ?? 'Login failed'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       } catch (e) {
-        setState(() => _isLoading = false);
+        Log.error('Login error', e);
         if (!mounted) return;
         
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Login failed. Please check your credentials.'),
+          SnackBar(
+            content: Text('Login failed: ${e.toString()}'),
             backgroundColor: Colors.red,
           ),
         );
+      } finally {
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
       }
     }
   }

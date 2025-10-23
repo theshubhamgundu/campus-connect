@@ -1,20 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, SocketException;
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:network_info_plus/network_info_plus.dart';
-import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:logger/logger.dart';
-import '../config/server_config.dart';
-import '../exceptions/server_exception.dart';
-
-typedef MessageCallback = void Function(dynamic data);
-typedef FileProgressCallback = void Function(int sent, int total);
 
 class WebSocketService {
   static final WebSocketService _instance = WebSocketService._internal();
@@ -26,21 +16,164 @@ class WebSocketService {
       errorMethodCount: 5,
       lineLength: 50,
       colors: true,
-      printEmojis: true,
     ),
   );
+
+  late WebSocketChannel _channel;
+  final StreamController<dynamic> _messageController = 
+      StreamController<dynamic>.broadcast();
+  final StreamController<bool> _connectionStateController = 
+      StreamController<bool>.broadcast();
+  final List<dynamic> _messageQueue = [];
   
-  WebSocketService._internal() {
-    _logger.d('WebSocketService initialized');
-  }
-  
-  // Connection state
   bool _isConnected = false;
   bool _isConnecting = false;
-  int _reconnectAttempts = 0;
-  DateTime _lastHeartbeat = DateTime.now();
-  Timer? _heartbeatTimer;
   Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+  static const int _maxReconnectAttempts = 5;
+  static const Duration _reconnectDelay = Duration(seconds: 2);
+  String? _url;
+  StreamSubscription? _connectivitySubscription;
+
+  bool get isConnected => _isConnected;
+  Stream<dynamic> get messageStream => _messageController.stream;
+  Stream<bool> get connectionState => _connectionStateController.stream;
+
+  WebSocketService._internal() {
+    _initConnectivityListener();
+  }
+
+  void _initConnectivityListener() {
+    _connectivitySubscription = Connectivity()
+        .onConnectivityChanged
+        .listen((ConnectivityResult result) {
+      if (result != ConnectivityResult.none && !_isConnected) {
+        _reconnect();
+      }
+    });
+  }
+
+  Future<void> connect(String url) async {
+    if (_isConnecting) return;
+    _url = url;
+    await _connect();
+  }
+
+  Future<void> _connect() async {
+    if (_isConnecting) return;
+    
+    _isConnecting = true;
+    _connectionStateController.add(false);
+
+    try {
+      _channel = WebSocketChannel.connect(Uri.parse(_url!));
+      
+      _channel.stream.listen(
+        _handleMessage,
+        onError: _handleError,
+        onDone: _handleDone,
+        cancelOnError: true,
+      );
+
+      _isConnected = true;
+      _reconnectAttempts = 0;
+      _connectionStateController.add(true);
+      _processMessageQueue();
+      _logger.i('WebSocket connected to $_url');
+    } catch (e) {
+      _handleError(e);
+    } finally {
+      _isConnecting = false;
+    }
+  }
+
+  void _handleMessage(dynamic message) {
+    try {
+      final decoded = jsonDecode(message);
+      _messageController.add(decoded);
+    } catch (e) {
+      _logger.e('Error decoding message: $e');
+    }
+  }
+
+  void _handleError(dynamic error) {
+    _logger.e('WebSocket error: $error');
+    _isConnected = false;
+    _connectionStateController.add(false);
+    _scheduleReconnect();
+  }
+
+  void _handleDone() {
+    if (_channel.closeCode != status.normalClosure) {
+      _logger.w('WebSocket connection closed unexpectedly');
+      _isConnected = false;
+      _connectionStateController.add(false);
+      _scheduleReconnect();
+    }
+  }
+
+  void _scheduleReconnect() {
+    if (_reconnectTimer != null || _reconnectAttempts >= _maxReconnectAttempts) {
+      return;
+    }
+
+    _reconnectAttempts++;
+    final delay = Duration(
+      seconds: min(_reconnectDelay.inSeconds * _reconnectAttempts, 30),
+    );
+
+    _reconnectTimer = Timer(delay, () {
+      _reconnectTimer = null;
+      if (!_isConnected) {
+        _connect();
+      }
+    });
+  }
+
+  void _reconnect() {
+    if (!_isConnected && _url != null) {
+      _connect();
+    }
+  }
+
+  void _processMessageQueue() {
+    while (_messageQueue.isNotEmpty && _isConnected) {
+      final message = _messageQueue.removeAt(0);
+      send(message);
+    }
+  }
+
+  void send(dynamic message) {
+    try {
+      if (_isConnected) {
+        final encoded = jsonEncode(message);
+        _channel.sink.add(encoded);
+      } else {
+        _messageQueue.add(message);
+        _reconnect();
+      }
+    } catch (e) {
+      _logger.e('Error sending message: $e');
+    }
+  }
+
+  Future<void> disconnect() async {
+    _reconnectTimer?.cancel();
+    _connectivitySubscription?.cancel();
+    await _channel.sink.close(status.normalClosure);
+    _isConnected = false;
+    _connectionStateController.add(false);
+    _logger.i('WebSocket disconnected');
+  }
+
+  @override
+  void dispose() {
+    disconnect();
+    _messageController.close();
+    _connectionStateController.close();
+  }
+  bool get isConnecting => _isConnecting;
+  String? get lastError => _lastError;
   
   // Message queue for when offline
   final List<Map<String, dynamic>> _messageQueue = [];
@@ -218,15 +351,27 @@ class WebSocketService {
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      if (_isConnected) {
-        if (DateTime.now().difference(_lastHeartbeat) > const Duration(seconds: 60)) {
-          debugPrint('No heartbeat received, reconnecting...');
-          _handleDisconnect();
-          return;
-        }
-        _sendHeartbeat();
-      } else {
+      if (!_isConnected) {
         timer.cancel();
+        return;
+      }
+      
+      // Check if we've missed too many heartbeats
+      if (DateTime.now().difference(_lastHeartbeat) > const Duration(seconds: 90)) {
+        _logger.w('Missed too many heartbeats, reconnecting...');
+        _handleDisconnect();
+        return;
+      }
+      
+      try {
+        // Send heartbeat
+        _channel?.sink.add(jsonEncode({
+          'event': 'heartbeat',
+          'data': {'timestamp': DateTime.now().millisecondsSinceEpoch},
+        }));
+      } catch (e) {
+        _logger.e('Failed to send heartbeat', e);
+        _handleError(e);
       }
     });
   }
