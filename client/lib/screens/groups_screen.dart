@@ -44,6 +44,168 @@ class _GroupsScreenState extends State<GroupsScreen> {
     },
   ];
 
+  void _showGroupOptions(Map<String, dynamic> group) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.push_pin),
+              title: Text(
+                group['isPinned'] ? 'Unpin from top' : 'Pin to top',
+              ),
+              onTap: () {
+                setState(() {
+                  group['isPinned'] = !group['isPinned'];
+                });
+                Navigator.pop(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.notifications),
+              title: const Text('Mute notifications'),
+              onTap: () {
+                // TODO: Implement mute notifications
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Notifications muted for this group'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.exit_to_app, color: Colors.red),
+              title: const Text('Exit group', style: TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(context);
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Exit Group'),
+                    content: Text('Are you sure you want to exit ${group['name']}?'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('CANCEL'),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          setState(() {
+                            _groups.removeWhere((g) => g['id'] == group['id']);
+                          });
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('You left ${group['name']}'),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        },
+                        child: const Text(
+                          'EXIT',
+                          style: TextStyle(color: Colors.red),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showCreateGroupDialog() {
+    final _formKey = GlobalKey<FormState>();
+    final _nameController = TextEditingController();
+    final _descriptionController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Create New Group'),
+        content: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Group Name',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter a group name';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _descriptionController,
+                decoration: const InputDecoration(
+                  labelText: 'Description (optional)',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 3,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('CANCEL'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (_formKey.currentState!.validate()) {
+                final newGroup = {
+                  'id': DateTime.now().millisecondsSinceEpoch.toString(),
+                  'name': _nameController.text,
+                  'description': _descriptionController.text.isNotEmpty
+                      ? _descriptionController.text
+                      : 'No description',
+                  'members': 1,
+                  'isPinned': false,
+                  'lastMessage': 'Group created',
+                  'time': 'Just now',
+                  'unread': 0,
+                  'icon': Icons.group,
+                };
+
+                setState(() {
+                  _groups.insert(0, newGroup);
+                });
+
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('${newGroup['name']} group created'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+            child: const Text('CREATE'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showGroupDetails(Map<String, dynamic> group) {
     showModalBottomSheet(
       context: context,

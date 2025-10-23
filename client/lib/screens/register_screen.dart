@@ -190,7 +190,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     labelText: 'Full Name *',
                     prefixIcon: Icon(Icons.person_outline),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: const BorderRadius.all(Radius.circular(12)),
                     ),
                     filled: true,
                   ),
@@ -208,7 +208,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     labelText: 'Email *',
                     prefixIcon: Icon(Icons.email_outlined),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: const BorderRadius.all(Radius.circular(12)),
                     ),
                     filled: true,
                   ),
@@ -266,7 +266,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       },
                     ),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: const BorderRadius.all(Radius.circular(12)),
                     ),
                     filled: true,
                   ),
@@ -299,7 +299,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       },
                     ),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: const BorderRadius.all(Radius.circular(12)),
                     ),
                     filled: true,
                   ),
@@ -329,7 +329,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: const BorderRadius.all(Radius.circular(12)),
                     ),
                     elevation: 2,
                   ),
