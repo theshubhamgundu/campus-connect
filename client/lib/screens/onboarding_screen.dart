@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
+import '../widgets/placeholder_image.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({Key? key}) : super(key: key);
@@ -160,9 +161,10 @@ class OnboardingPageView extends StatelessWidget {
         children: [
           Expanded(
             flex: 3,
-            child: Image.asset(
+            child: PlaceholderImage(
               page.image,
               fit: BoxFit.contain,
+              placeholder: const Icon(Icons.image, size: 100, color: Colors.grey),
             ),
           ),
           const SizedBox(height: 48),

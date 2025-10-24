@@ -47,25 +47,28 @@ class WebSocketService {
     _connectivitySubscription = Connectivity()
         .onConnectivityChanged
         .listen((ConnectivityResult result) {
-      if (result != ConnectivityResult.none && !_isConnected) {
+      _logger.i('Connectivity changed: $result');
+      if (result != ConnectivityResult.none) {
+        if (!_isConnected && !_isConnecting) {
+          _reconnect();
+        }
         _reconnect();
       }
     });
   }
 
   Future<void> connect(String url) async {
-    if (_isConnecting) return;
+    if (_isConnected || _isConnecting) return;
     _url = url;
-    await _connect();
-  }
-
-  Future<void> _connect() async {
-    if (_isConnecting) return;
-    
     _isConnecting = true;
-    _connectionStateController.add(false);
+    _updateConnectionState();
+    
+    _logger.i('Connecting to WebSocket at $url');
 
     try {
+      // Cancel any existing connection
+      await _channel?.sink?.close();
+
       _channel = WebSocketChannel.connect(Uri.parse(_url!));
       
       _channel.stream.listen(
@@ -114,17 +117,22 @@ class WebSocketService {
 
   void _scheduleReconnect() {
     if (_reconnectTimer != null || _reconnectAttempts >= _maxReconnectAttempts) {
+      if (_reconnectAttempts >= _maxReconnectAttempts) {
+        _logger.e('Max reconnection attempts reached');
+        _messageController.add({
+          'type': 'error',
+          'message': 'Cannot connect to server. Please check your internet connection and try again.',
+          'timestamp': DateTime.now().toIso8601String(),
+        });
+      }
       return;
     }
 
     _reconnectAttempts++;
-    final delay = Duration(
-      seconds: min(_reconnectDelay.inSeconds * _reconnectAttempts, 30),
-    );
-
-    _reconnectTimer = Timer(delay, () {
-      _reconnectTimer = null;
-      if (!_isConnected) {
+    final delay = _reconnectDelay * (1 + _reconnectAttempts); // Exponential backoff
+    _logger.i('Scheduling reconnection attempt $_reconnectAttempts in ${delay.inSeconds}s');
+    
+    _reconnectTimer = Timer(delay, _reconnect);
         _connect();
       }
     });

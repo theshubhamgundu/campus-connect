@@ -33,12 +33,40 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   final FocusNode _focusNode = FocusNode();
   final GlobalKey _messageListKey = GlobalKey();
 
+  bool _isConnected = true;
+  StreamSubscription? _connectionSubscription;
+
   @override
   void initState() {
     super.initState();
+    _initConnectionListener();
     _loadMessages();
     _scrollController.addListener(_onScroll);
     _focusNode.addListener(_onFocusChange);
+  }
+
+  void _initConnectionListener() {
+    final webSocketService = Provider.of<WebSocketService>(context, listen: false);
+    _connectionSubscription = webSocketService.connectionState.listen((isConnected) {
+      if (mounted) {
+        setState(() {
+          _isConnected = isConnected;
+        });
+        
+        if (isConnected) {
+          // Reconnect and reload messages when connection is restored
+          _loadMessages();
+        } else {
+          // Show connection lost message
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Connection lost. Trying to reconnect...'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    });
   }
 
   @override
@@ -48,6 +76,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _messageController.dispose();
     _messagesSubscription?.cancel();
     _typingSubscription?.cancel();
+    _connectionSubscription?.cancel();
     _focusNode.removeListener(_onFocusChange);
     _focusNode.dispose();
     super.dispose();
@@ -169,20 +198,29 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
-  Future<void> _sendMessage() async {
-    final messageText = _messageController.text.trim();
-    if (messageText.isEmpty || _isSending) return;
+  Future<void> _sendMessage(String text) async {
+    if (text.trim().isEmpty || !_isConnected) return;
 
-    final groupService = Provider.of<GroupService>(context, listen: false);
-    
-    setState(() {
-      _isSending = true;
-    });
+    setState(() => _isSending = true);
 
     try {
+      if (!_isConnected) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Cannot send message. No connection to server.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      final groupService = Provider.of<GroupService>(context, listen: false);
+      
       await groupService.sendMessage(
         groupId: widget.group.id,
-        content: messageText,
+        content: text,
         type: MessageType.text,
       );
       
@@ -375,105 +413,179 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
+  Widget _buildConnectionStatus() {
+    if (_isConnected) return const SizedBox.shrink();
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      color: Colors.orange,
+      child: const Center(
+        child: Text(
+          'Connecting...',
+          style: TextStyle(color: Colors.white, fontSize: 12),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              widget.group.name,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            if (_typingUsers.isNotEmpty)
-              Text(
-                _getTypingText(),
-                style: theme.textTheme.bodySmall,
-              )
-            else
-              StreamBuilder<int?>(
-                stream: Stream.periodic(const Duration(seconds: 30)),
-                builder: (context, _) {
-                  final onlineCount = 1; // Replace with actual online count
-                  return Text(
-                    '${widget.group.memberIds.length} members • $onlineCount online',
-                    style: theme.textTheme.bodySmall,
-                  );
-                },
-              ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.people),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => GroupMembersScreen(group: widget.group),
+    return WillPopScope(
+      onWillPop: () async {
+        // Clear any error messages when going back
+        if (mounted) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+        }
+        return true;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.group.name),
+              if (_typingUsers.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  '${_typingUsers.entries.where((e) => e.value).take(2).map((e) => e.key).join(', ')} ${_typingUsers.length > 2 ? '...' : ''} is typing...',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white70,
+                    fontStyle: FontStyle.italic,
+                  ),
                 ),
-              );
-            },
-          ),
-          PopupMenuButton<String>(
-            onSelected: (value) {
-              switch (value) {
-                case 'info':
-                  // TODO: Show group info
-                  break;
-                case 'media':
-                  // TODO: Show shared media
-                  break;
-                case 'mute':
-                  // TODO: Mute notifications
-                  break;
-                case 'exit':
-                  // TODO: Exit group
-                  break;
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'info',
-                child: Text('Group Info'),
-              ),
-              const PopupMenuItem(
-                value: 'media',
-                child: Text('Shared Media'),
-              ),
-              const PopupMenuItem(
-                value: 'mute',
-                child: Text('Mute Notifications'),
-              ),
-              const PopupMenuItem(
-                value: 'exit',
-                child: Text('Exit Group', style: TextStyle(color: Colors.red)),
-              ),
+              ] else if (!_isConnected) ...[
+                const SizedBox(height: 2),
+                Text(
+                  'Connecting...',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.orange[200],
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
             ],
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: _isLoading && _messages.isEmpty
-                ? const Center(child: CircularProgressIndicator())
-                : _messages.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.people),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => GroupMembersScreen(group: widget.group),
+                  ),
+                );
+              },
+            ),
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                switch (value) {
+                  case 'info':
+                    // TODO: Show group info
+                    break;
+                  case 'media':
+                    // TODO: Show shared media
+                    break;
+                  case 'mute':
+                    // TODO: Mute notifications
+                    break;
+                  case 'exit':
+                    // TODO: Exit group
+                    break;
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'info',
+                  child: Text('Group Info'),
+                ),
+                const PopupMenuItem(
+                  value: 'media',
+                  child: Text('Shared Media'),
+                ),
+                const PopupMenuItem(
+                  value: 'mute',
+                  child: Text('Mute Notifications'),
+                ),
+                const PopupMenuItem(
+                  value: 'exit',
+                  child: Text('Exit Group', style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            _buildConnectionStatus(),
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _messages.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.forum_outlined,
+                                size: 64,
+                                color: Colors.grey[400],
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No messages yet',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Send a message to start the conversation',
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                        )
+                      : Stack(
                           children: [
-                            Icon(
-                              Icons.forum_outlined,
-                              size: 64,
-                              color: Colors.grey[400],
+                            GestureDetector(
+                              onTap: () {
+                                // Dismiss keyboard when tapping on messages
+                                FocusScope.of(context).unfocus();
+                              },
+                              child: ListView.builder(
+                                key: _messageListKey,
+                                controller: _scrollController,
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                itemCount: _messages.length,
+                                itemBuilder: (context, index) {
+                                  final message = _messages[index];
+                                  final isMe = message.senderId == currentUserId;
+                                  final showAvatar = index == 0 ||
+                                      _messages[index - 1].senderId !=
+                                          message.senderId;
+                                  final showTime = index == _messages.length - 1 ||
+                                      _messages[index + 1].senderId !=
+                                          message.senderId;
+
+                                  return MessageBubble(
+                                    message: message,
+                                    isMe: isMe,
+                                    showAvatar: showAvatar,
+                                    showTime: showTime,
+                                    onLongPress: () => _showMessageOptions(message),
+                                  );
+                                },
+                              ),
                             ),
-                            const SizedBox(height: 16),
-                            Text(
+                            if (_showScrollToBottom)
+                              Positioned(
+                                right: 16,
+                                bottom: 16,
+                                child: FloatingActionButton.small(
+                                  onPressed: _scrollToBottom,
+                                  child: const Icon(Icons.arrow_downward),
+                                ),
+                              ),
                               'No messages yet',
                               style: theme.textTheme.titleMedium,
                             ),

@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'home_screen.dart';
 import 'register_screen.dart';
+import '../widgets/placeholder_image.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -63,9 +64,11 @@ class _LoginScreenState extends State<LoginScreen> {
               // Logo and welcome text
               Column(
                 children: [
-                  Image.asset(
+                  PlaceholderImage(
                     'assets/images/app_logo.png',
                     height: 120,
+                    width: 120,
+                    placeholder: const Icon(Icons.account_balance_wallet, size: 60, color: Colors.blue),
                   ),
                   const SizedBox(height: 24),
                   Text(
@@ -204,7 +207,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         side: BorderSide(color: Colors.grey[300]!),
                       ),
-                      icon: Image.asset(
+                      icon: PlaceholderImage(
                         'assets/images/google_logo.png',
                         height: 24,
                         width: 24,

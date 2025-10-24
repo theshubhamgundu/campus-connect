@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import '../providers/auth_provider.dart';
-import 'forgot_password_screen.dart';
+import 'auth/forgot_password_screen.dart';
 import '../services/logger_service.dart';
 import 'register_screen.dart';
+import '../widgets/placeholder_image.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -206,12 +207,11 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     side: BorderSide(color: Colors.grey[300]!), 
                   ),
-                  icon: Image.asset(
+                  icon: PlaceholderImage(
                     'assets/images/google_logo.png',
                     height: 24,
                     width: 24,
-                    errorBuilder: (context, error, stackTrace) => 
-                        const Icon(Icons.g_mobiledata, size: 24),
+                    placeholder: const Icon(Icons.g_mobiledata, size: 24),
                   ),
                   label: const Text(
                     'Continue with Google',

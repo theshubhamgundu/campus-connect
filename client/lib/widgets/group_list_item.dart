@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
-import '../models/group.dart';
 import 'package:intl/intl.dart';
+import '../models/group.dart';
 
 class GroupListItem extends StatelessWidget {
   final Group group;
   final VoidCallback onTap;
   final bool showUnreadCount;
+  final bool isConnected;
 
   const GroupListItem({
     Key? key,
     required this.group,
     required this.onTap,
     this.showUnreadCount = true,
+    this.isConnected = true,
   }) : super(key: key);
 
   @override
@@ -19,17 +21,19 @@ class GroupListItem extends StatelessWidget {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: isDark ? Colors.grey[800]! : Colors.grey[200]!,
+    return Opacity(
+      opacity: isConnected ? 1.0 : 0.6,
+      child: Card(
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: isDark ? Colors.grey[800]! : Colors.grey[200]!,
+          ),
         ),
-      ),
       child: InkWell(
-        onTap: onTap,
+        onTap: isConnected ? onTap : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(12.0),
@@ -133,7 +137,6 @@ class GroupListItem extends StatelessWidget {
           ),
         ),
       ),
-    );
   }
 
   String _getLastMessagePreview(Message message) {
