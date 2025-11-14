@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import '../providers/auth_provider.dart';
 import 'auth/forgot_password_screen.dart';
 import '../services/logger_service.dart';
@@ -208,10 +207,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     side: BorderSide(color: Colors.grey[300]!), 
                   ),
                   icon: PlaceholderImage(
-                    'assets/images/google_logo.png',
+                    assetPath: 'assets/images/google_logo.png',
                     height: 24,
                     width: 24,
-                    placeholder: const Icon(Icons.g_mobiledata, size: 24),
                   ),
                   label: const Text(
                     'Continue with Google',

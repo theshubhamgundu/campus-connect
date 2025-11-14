@@ -2,7 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-/// Simple LAN-only WebSocket server for CampusNet.
+/// Enhanced CampusNet Server with Real-Time Device Tracking
+/// Features:
+/// - Automatic hotspot enable/management
+/// - Real-time device connection tracking
+/// - Network statistics from Windows
+/// - Live device list updates
+/// 
 /// Listens on ws://<LAN-IP>:8083/ws
 /// Protocol: JSON messages with a `type` field.
 /// - login: {type:"login", userId:"C123", displayName:"Alice"}
@@ -12,10 +18,24 @@ import 'dart:io';
 
 class Client {
   final WebSocket socket;
+  final String clientIp;
+  final DateTime connectedAt;
   String? userId;
   String? displayName;
+  String? role; // Student or Faculty
 
-  Client(this.socket);
+  Client(this.socket, this.clientIp, this.connectedAt);
+  
+  Map<String, dynamic> toMap() {
+    return {
+      'ip': clientIp,
+      'userId': userId ?? 'Not logged in',
+      'displayName': displayName ?? 'Anonymous',
+      'role': role ?? 'N/A',
+      'connectedAt': connectedAt.toIso8601String(),
+      'connectionDuration': DateTime.now().difference(connectedAt).inSeconds,
+    };
+  }
 }
 
 class Room {
@@ -28,34 +48,456 @@ class ServerState {
   final Map<WebSocket, Client> clients = {};
   final Map<String, WebSocket> userSocket = {};
   final Map<String, Room> rooms = {};
+  final List<Map<String, dynamic>> disconnectedDevices = [];
 
-  void addClient(WebSocket ws) {
-    clients[ws] = Client(ws);
+  void addClient(WebSocket ws, String clientIp) {
+    clients[ws] = Client(ws, clientIp, DateTime.now());
   }
 
   void removeClient(WebSocket ws) {
     final c = clients.remove(ws);
     if (c != null && c.userId != null) {
       userSocket.remove(c.userId);
+      // Store disconnected device info for history
+      disconnectedDevices.add({
+        ...c.toMap(),
+        'disconnectedAt': DateTime.now().toIso8601String(),
+      });
+      // Keep only last 10 disconnections
+      if (disconnectedDevices.length > 10) {
+        disconnectedDevices.removeAt(0);
+      }
       for (final room in rooms.values) {
         room.members.remove(c.userId);
       }
     }
+  }
+  
+  int get totalConnectedDevices => clients.length;
+  int get totalLoggedInUsers => clients.values.where((c) => c.userId != null).length;
+}
+
+void _handleFileComplete(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  final to = (msg['to'] ?? '').toString();
+  final forward = {
+    'type': 'fileComplete',
+    'from': fromClient.userId,
+    'to': to,
+    'fileId': msg['fileId'],
+    'fileName': msg['fileName'],
+    'fileSize': msg['fileSize'],
+    'ts': DateTime.now().toIso8601String(),
+  };
+  if (to.isEmpty) {
+    _broadcast(state, forward);
+  } else {
+    _routeTo(state, to, forward);
+    _send(ws, forward);
+  }
+}
+
+void _handleSignal(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  final to = (msg['to'] ?? '').toString();
+  if (to.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_target'});
+    return;
+  }
+  final payload = Map<String, dynamic>.from(msg)
+    ..['from'] = fromClient.userId
+    ..['ts'] = DateTime.now().toIso8601String();
+  _routeTo(state, to, payload);
+}
+
+/// Check if running with admin privileges
+Future<bool> _isRunningAsAdmin() async {
+  try {
+    final result = await Process.run('net', ['session'], runInShell: true);
+    return result.exitCode == 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Get hotspot status from Windows
+Future<String> _getHotspotStatus() async {
+  try {
+    final result = await Process.run('netsh', [
+      'wlan',
+      'show',
+      'hostednetwork',
+    ], runInShell: true);
+    
+    if (result.stdout.toString().contains('Status') && result.stdout.toString().contains('Started')) {
+      return 'started';
+    } else if (result.stdout.toString().contains('Status') && result.stdout.toString().contains('Stopped')) {
+      return 'stopped';
+    }
+    return 'unknown';
+  } catch (e) {
+    return 'error: $e';
+  }
+}
+
+/// Enable Windows Mobile Hotspot with robust error handling
+Future<bool> _enableMobileHotspot() async {
+  try {
+    print('🔌 Configuring Mobile Hotspot...');
+    print('   SSID: CampusNet');
+    print('   Password: CampusNet2025');
+    
+    // Check admin privileges
+    final isAdmin = await _isRunningAsAdmin();
+    if (!isAdmin) {
+      print('⚠️  WARNING: This server is NOT running with administrator privileges');
+      print('   Hotspot may not start automatically.');
+      print('   Please run this server as Administrator (Run as Administrator)');
+      print('');
+    }
+    
+    // Set hosted network configuration
+    print('📋 Setting hosted network configuration...');
+    final configResult = await Process.run('netsh', [
+      'wlan',
+      'set',
+      'hostednetwork',
+      'mode=allow',
+      'ssid=CampusNet',
+      'key=CampusNet2025',
+    ], runInShell: true);
+    
+    if (configResult.exitCode == 0) {
+      print('✓ Hotspot configuration updated');
+    } else {
+      print('⚠️  Could not set configuration: ${configResult.stderr}');
+    }
+    
+    // Wait a bit for configuration to apply
+    await Future.delayed(const Duration(milliseconds: 800));
+    
+    // Start the hosted network
+    print('🚀 Starting hosted network...');
+    final startResult = await Process.run('netsh', [
+      'wlan',
+      'start',
+      'hostednetwork',
+    ], runInShell: true);
+    
+    if (startResult.exitCode == 0) {
+      print('✓ Mobile Hotspot STARTED successfully');
+      print('  📱 WiFi Network: CampusNet');
+      print('  🔐 Password: CampusNet2025');
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // Check status to confirm
+      final status = await _getHotspotStatus();
+      if (status == 'started') {
+        print('  ✓ Status: RUNNING');
+        return true;
+      }
+    } else {
+      final stderr = startResult.stderr.toString().toLowerCase();
+      if (stderr.contains('already') || stderr.contains('running')) {
+        print('✓ Hotspot already running');
+        final status = await _getHotspotStatus();
+        if (status == 'started') {
+          print('  ✓ Status: RUNNING');
+          return true;
+        }
+      } else if (stderr.contains('admin') || stderr.contains('privilege')) {
+        print('❌ ADMIN PRIVILEGES REQUIRED');
+        print('   Please restart this server with Administrator access');
+        return false;
+      } else {
+        print('⚠️  Start command result: ${startResult.stderr}');
+      }
+    }
+    return false;
+  } catch (e) {
+    print('❌ Error enabling hotspot: $e');
+    print('   Please enable it manually from Settings > Network & Internet > Mobile hotspot');
+    return false;
+  }
+}
+
+/// Display real-time connected devices (from Windows network)
+Future<List<Map<String, dynamic>>> _getConnectedDevices(ServerState state) async {
+  final devices = <Map<String, dynamic>>[];
+  
+  // Get all connected clients from our server
+  for (final client in state.clients.values) {
+    devices.add({
+      'type': 'connected',
+      'ip': client.clientIp,
+      'userId': client.userId ?? 'Connecting...',
+      'name': client.displayName ?? 'Unknown Device',
+      'role': client.role ?? 'N/A',
+      'status': client.userId != null ? 'logged_in' : 'connecting',
+      'connectedAt': client.connectedAt.toIso8601String(),
+      'uptime': '${DateTime.now().difference(client.connectedAt).inSeconds}s',
+    });
+  }
+  
+  // Try to get ARP table info (Windows cmd)
+  try {
+    final result = await Process.run('arp', ['-a'], runInShell: true);
+    final lines = result.stdout.toString().split('\n');
+    
+    // Parse ARP table for dynamic entries (recently active devices)
+    for (final line in lines) {
+      if (line.contains('dynamic') && line.contains('192.168.137')) {
+        final parts = line.trim().split(RegExp(r'\s+'));
+        if (parts.length >= 2) {
+          final ip = parts[0];
+          // Check if this IP is already in our connected list
+          final alreadyConnected = devices.any((d) => d['ip'] == ip);
+          if (!alreadyConnected) {
+            devices.add({
+              'type': 'detected',
+              'ip': ip,
+              'userId': 'Not connected',
+              'name': 'Nearby Device',
+              'role': 'N/A',
+              'status': 'nearby',
+              'detectedAt': DateTime.now().toIso8601String(),
+              'info': 'Detected on network, not connected to CampusNet',
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Silently ignore if ARP fails
+  }
+  
+  return devices;
+}
+
+/// Display device dashboard in console
+Future<void> _printDeviceDashboard(ServerState state) async {
+  print('');
+  print('╔═══════════════════════════════════════════════════════════╗');
+  print('║  📊 CONNECTED DEVICES DASHBOARD                          ║');
+  print('╚═══════════════════════════════════════════════════════════╝');
+  
+  final devices = await _getConnectedDevices(state);
+  
+  if (devices.isEmpty) {
+    print('  No devices connected yet');
+  } else {
+    print('  Total Devices: ${devices.length} | Logged In: ${state.totalLoggedInUsers}');
+    print('');
+    print('  ┌────────────────────────────────────────────────────────┐');
+    for (var i = 0; i < devices.length; i++) {
+      final device = devices[i];
+      final icon = device['type'] == 'connected' ? '🔗' : '📡';
+      final status = device['status'] ?? 'unknown';
+      final statusIcon = status == 'logged_in' ? '✓' : status == 'connecting' ? '⏳' : '?';
+      
+      print('  │ $icon [$statusIcon] ${device['ip']}');
+      print('  │    User: ${device['userId']}');
+      print('  │    Device: ${device['name']}');
+      if (device['role'] != 'N/A') {
+        print('  │    Role: ${device['role']}');
+      }
+      if (device['type'] == 'connected') {
+        print('  │    Uptime: ${device['uptime']}');
+      }
+      if (i < devices.length - 1) {
+        print('  │');
+      }
+    }
+    print('  └────────────────────────────────────────────────────────┘');
+  }
+  
+  print('');
+}
+
+/// Periodic device monitoring (updates every 30 seconds)
+void _startDeviceMonitor(ServerState state) {
+  Timer.periodic(const Duration(seconds: 30), (_) async {
+    if (state.clients.isNotEmpty) {
+      await _printDeviceDashboard(state);
+    }
+  });
+}
+
+/// UDP Discovery Listener
+/// Listens on port 8082 for client discovery requests
+/// Responds with server address and WebSocket port
+Future<void> _startUdpDiscoveryListener(int wsPort) async {
+  try {
+    final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 8082);
+    print('✓ UDP discovery listener started on port 8082');
+    
+    // Get server's local IP address once at startup
+    String serverIp = '192.168.137.167'; // fallback
+    try {
+      final interfaces = await NetworkInterface.list();
+      for (final interface in interfaces) {
+        for (final addr in interface.addresses) {
+          // Prefer IPv4 on local network (excluding loopback)
+          if (addr.type == InternetAddressType.IPv4 && 
+              !addr.address.startsWith('127.')) {
+            serverIp = addr.address;
+            // Check if this looks like a hotspot interface
+            if (interface.name.toLowerCase().contains('wlan') || 
+                interface.name.toLowerCase().contains('wifi') ||
+                interface.name.toLowerCase().contains('hotspot')) {
+              print('  WiFi/Hotspot Interface: ${interface.name} → $serverIp');
+            }
+            break;
+          }
+        }
+      }
+      print('✓ Server will respond with IP: $serverIp');
+    } catch (e) {
+      print('⚠️  Could not detect server IP, using fallback: $e');
+    }
+    
+    // Listen for incoming discovery requests
+    socket.listen((event) {
+      if (event == RawSocketEvent.read) {
+        final datagram = socket.receive();
+        if (datagram != null) {
+          try {
+            final message = utf8.decode(datagram.data);
+            final data = jsonDecode(message) as Map<String, dynamic>;
+            
+            // Check if this is a server discovery request
+            if (data['type'] == 'server_discovery_request') {
+              final clientAddress = datagram.address;
+              
+              // Send discovery response back to client
+              final response = jsonEncode({
+                'type': 'server_discovery_response',
+                'address': serverIp,
+                'port': wsPort,
+                'timestamp': DateTime.now().toIso8601String(),
+              });
+              
+              socket.send(
+                utf8.encode(response),
+                clientAddress,
+                datagram.port,
+              );
+              print('📨 Sent discovery response to ${datagram.address}:${datagram.port}');
+            }
+          } catch (e) {
+            // Ignore malformed messages silently
+          }
+        }
+      }
+    });
+
+    // Optional: Broadcast server availability periodically (can be enabled for aggressive discovery)
+    // Timer.periodic(Duration(seconds: 10), (_) {
+    //   final broadcast = jsonEncode({'type': 'server_heartbeat', 'address': serverIp, 'port': wsPort});
+    //   socket.send(utf8.encode(broadcast), InternetAddress('255.255.255.255'), 8082);
+    // });
+    
+  } catch (e) {
+    print('❌ Error starting UDP discovery listener: $e');
   }
 }
 
 Future<void> main(List<String> args) async {
   final state = ServerState();
   final port = 8083;
+  
+  // Print startup banner
+  print('');
+  print('╔═══════════════════════════════════════════════════════════╗');
+  print('║           🚀 CampusNet Server Initializing...              ║');
+  print('╚═══════════════════════════════════════════════════════════╝');
+  print('');
+  
+  // Enable Mobile Hotspot on startup
+  final hotspotEnabled = await _enableMobileHotspot();
+  print('');
+  
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-  print('CampusNet server listening on ws://0.0.0.0:$port/ws');
+  
+  print('✓ WebSocket Server initialized');
+  print('  Port: $port');
+  print('  Address: ws://0.0.0.0:$port/ws');
+  print('');
+
+  // Detect and print available network interfaces
+  String? hotspotIp;
+  try {
+    final interfaces = await NetworkInterface.list();
+    print('📊 Network Configuration:');
+    for (final interface in interfaces) {
+      if (interface.addresses.isNotEmpty) {
+        for (final addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4) {
+            bool isHotspot = false;
+            if (interface.name.toLowerCase().contains('wlan') || 
+                interface.name.toLowerCase().contains('wifi') ||
+                interface.name.toLowerCase().contains('hotspot') ||
+                interface.name.toLowerCase().contains('local area connection* ')) {
+              print('  ✓ ${interface.name}');
+              print('    └─ IPv4: ${addr.address}');
+              print('    └─ Type: ${hotspotEnabled ? 'Hotspot (CampusNet)' : 'WiFi/Network'}');
+              isHotspot = true;
+              if (hotspotEnabled) {
+                hotspotIp = addr.address;
+              }
+            } else if (!interface.name.toLowerCase().contains('loopback')) {
+              print('  ○ ${interface.name}');
+              print('    └─ IPv4: ${addr.address}');
+            }
+            break;
+          }
+        }
+      }
+    }
+    print('');
+  } catch (e) {
+    print('ℹ️  Could not detect network interfaces: $e');
+  }
+
+  print('✓ UDP Discovery listener');
+  print('  Port: 8082');
+  print('  Status: Listening for client discovery requests');
+  print('');
+  
+  // Start UDP discovery listener in background
+  _startUdpDiscoveryListener(port);
+  
+  // Start device monitor (updates every 30 seconds)
+  _startDeviceMonitor(state);
+  
+  print('╔═══════════════════════════════════════════════════════════╗');
+  print('║  ✓ CampusNet Server is READY                             ║');
+  print('║  Waiting for client connections...                       ║');
+  if (hotspotEnabled) {
+    print('║  📱 Hotspot: CampusNet is ACTIVE                         ║');
+  } else {
+    print('║  ⚠️  Hotspot Status: Check admin privileges             ║');
+  }
+  print('║  Press Ctrl+C to stop                                    ║');
+  print('╚═══════════════════════════════════════════════════════════╝');
+  print('');
 
   await for (final request in server) {
     if (request.uri.path == '/ws') {
       if (WebSocketTransformer.isUpgradeRequest(request)) {
         WebSocketTransformer.upgrade(request).then((WebSocket websocket) {
-          state.addClient(websocket);
-          _handleSocket(state, websocket);
+          final clientIp = request.connectionInfo?.remoteAddress.address ?? 'unknown';
+          print('🔗 New WebSocket connection from $clientIp');
+          state.addClient(websocket, clientIp);
+          _handleSocket(state, websocket, clientIp);
         });
       } else {
         request.response
@@ -72,15 +514,29 @@ Future<void> main(List<String> args) async {
   }
 }
 
-void _handleSocket(ServerState state, WebSocket ws) {
+void _handleSocket(ServerState state, WebSocket ws, String clientIp) {
+  print('');
+  print('┌─ 🔗 NEW CONNECTION ─────────────────────────────');
+  print('│  IP Address: $clientIp');
+  print('│  Timestamp: ${DateTime.now().toIso8601String()}');
+  print('│  Status: Waiting for login...');
+  print('│  Total Connected: ${state.totalConnectedDevices + 1}');
+  print('└─────────────────────────────────────────────────');
+  
   ws.listen((data) {
     try {
+      // Handle raw ping/pong text frames
+      if (data is String && (data == 'ping' || data == 'pong')) {
+        if (data == 'ping') ws.add('pong');
+        return;
+      }
+
       final msg = _parseJson(data);
       if (msg == null) return;
       final type = msg['type'];
       switch (type) {
         case 'login':
-          _handleLogin(state, ws, msg);
+          _handleLogin(state, ws, msg, clientIp);
           break;
         case 'message':
           _handleMessage(state, ws, msg);
@@ -91,11 +547,33 @@ void _handleSocket(ServerState state, WebSocket ws) {
         case 'who':
           _handleWho(state, ws);
           break;
+        case 'typing':
+          _handleTyping(state, ws, msg);
+          break;
+        case 'join':
+          _handleJoin(state, ws, msg);
+          break;
+        case 'leave':
+          _handleLeave(state, ws, msg);
+          break;
         case 'fileMeta':
           _handleFileMeta(state, ws, msg);
           break;
         case 'fileChunk':
           _handleFileChunk(state, ws, msg);
+          break;
+        case 'fileComplete':
+          _handleFileComplete(state, ws, msg);
+          break;
+        // WebRTC signaling pass-through for LAN calls
+        case 'call_invite':
+        case 'call_accept':
+        case 'call_reject':
+        case 'call_end':
+        case 'webrtc_offer':
+        case 'webrtc_answer':
+        case 'webrtc_ice':
+          _handleSignal(state, ws, msg);
           break;
         default:
           _send(ws, {
@@ -109,9 +587,23 @@ void _handleSocket(ServerState state, WebSocket ws) {
     }
   }, onDone: () {
     final c = state.clients[ws];
-    final userId = c?.userId;
+    final userId = c?.userId ?? 'anonymous';
+    final displayName = c?.displayName ?? 'Unknown Device';
+    final role = c?.role ?? 'N/A';
+    
+    print('');
+    print('┌─ ❌ DEVICE DISCONNECTED ────────────────────────');
+    print('│  IP Address: $clientIp');
+    print('│  User ID: $userId');
+    print('│  Name: $displayName');
+    print('│  Role: $role');
+    print('│  Timestamp: ${DateTime.now().toIso8601String()}');
+    print('│  Remaining Devices: ${state.totalConnectedDevices - 1}');
+    print('└─────────────────────────────────────────────────');
+    
     state.removeClient(ws);
-    if (userId != null) {
+    
+    if (userId != 'anonymous') {
       _broadcast(state, {
         'type': 'presence',
         'event': 'offline',
@@ -120,9 +612,21 @@ void _handleSocket(ServerState state, WebSocket ws) {
     }
   }, onError: (err) {
     final c = state.clients[ws];
-    final userId = c?.userId;
+    final userId = c?.userId ?? 'anonymous';
+    final displayName = c?.displayName ?? 'Unknown Device';
+    
+    print('');
+    print('┌─ ⚠️  CONNECTION ERROR ──────────────────────────');
+    print('│  IP Address: $clientIp');
+    print('│  User ID: $userId');
+    print('│  Name: $displayName');
+    print('│  Error: $err');
+    print('│  Timestamp: ${DateTime.now().toIso8601String()}');
+    print('└─────────────────────────────────────────────────');
+    
     state.removeClient(ws);
-    if (userId != null) {
+    
+    if (userId != 'anonymous') {
       _broadcast(state, {
         'type': 'presence',
         'event': 'offline',
@@ -152,23 +656,40 @@ void _broadcast(ServerState state, Map<String, dynamic> json) {
   }
 }
 
-void _handleLogin(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+void _handleLogin(ServerState state, WebSocket ws, Map<String, dynamic> msg, String clientIp) {
   final userId = (msg['userId'] ?? '').toString().trim();
   final displayName = (msg['displayName'] ?? userId).toString().trim();
+  final role = (msg['role'] ?? 'Student').toString().trim();
+  
   if (userId.isEmpty) {
     _send(ws, {'type': 'loginAck', 'ok': false, 'reason': 'missing_userId'});
+    print('⚠️  Login failed: Missing user ID from $clientIp');
     return;
   }
+  
   final client = state.clients[ws]!;
   client.userId = userId;
   client.displayName = displayName;
+  client.role = role;
   state.userSocket[userId] = ws;
+
+  print('');
+  print('┌─ ✓ LOGIN SUCCESSFUL ───────────────────────────');
+  print('│  User ID: $userId');
+  print('│  Name: $displayName');
+  print('│  Role: $role');
+  print('│  IP Address: $clientIp');
+  print('│  Connected At: ${DateTime.now().toIso8601String()}');
+  print('│  Total Users Online: ${state.totalLoggedInUsers}');
+  print('│  Total Connected: ${state.totalConnectedDevices}');
+  print('└─────────────────────────────────────────────────');
 
   _send(ws, {
     'type': 'loginAck',
     'ok': true,
     'userId': userId,
     'displayName': displayName,
+    'role': role,
   });
 
   // Inform others
@@ -177,6 +698,7 @@ void _handleLogin(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
     'event': 'online',
     'userId': userId,
     'displayName': displayName,
+    'role': role,
   });
 }
 
@@ -218,6 +740,61 @@ void _handleMessage(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
   }
 }
 
+void _handleTyping(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  final from = fromClient.userId!;
+  final to = (msg['to'] ?? '').toString();
+  final isTyping = msg['isTyping'] == true;
+  if (to.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_typing'});
+    return;
+  }
+  final payload = {
+    'type': 'typing',
+    'from': from,
+    'to': to,
+    'isTyping': isTyping,
+    'ts': DateTime.now().toIso8601String(),
+  };
+  _routeTo(state, to, payload);
+}
+
+void _handleJoin(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  final roomId = (msg['roomId'] ?? '').toString();
+  if (roomId.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_room'});
+    return;
+  }
+  final room = state.rooms.putIfAbsent(roomId, () => Room(roomId));
+  room.members.add(fromClient.userId!);
+  _send(ws, {'type': 'joinAck', 'ok': true, 'roomId': roomId});
+}
+
+void _handleLeave(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  final roomId = (msg['roomId'] ?? '').toString();
+  if (roomId.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_room'});
+    return;
+  }
+  final room = state.rooms[roomId];
+  room?.members.remove(fromClient.userId!);
+  _send(ws, {'type': 'leaveAck', 'ok': true, 'roomId': roomId});
+}
+
 void _handleAnnouncement(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
   final fromClient = state.clients[ws];
   if (fromClient == null || fromClient.userId == null) {
@@ -234,6 +811,29 @@ void _handleAnnouncement(ServerState state, WebSocket ws, Map<String, dynamic> m
     'from': fromClient.userId,
     'text': text,
     'ts': DateTime.now().toIso8601String(),
+  });
+}
+
+void _handleWho(ServerState state, WebSocket ws) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  
+  final onlineUsers = <Map<String, dynamic>>[];
+  for (final client in state.clients.values) {
+    if (client.userId != null) {
+      onlineUsers.add({
+        'userId': client.userId,
+        'displayName': client.displayName ?? client.userId,
+      });
+    }
+  }
+  
+  _send(ws, {
+    'type': 'who',
+    'users': onlineUsers,
   });
 }
 

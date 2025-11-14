@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'dart:typed_data';
@@ -6,11 +7,13 @@ import 'package:intl/intl.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../models/chat.dart';
+import '../models/chat.dart' as chat_model;
+import '../models/message.dart';
+import '../services/chat_service.dart';
 
 
 class ChatScreen extends StatefulWidget {
-  final Chat chat;
+  final chat_model.Chat chat;
   final Function(Message) onSendMessage;
   final Function(File) onSendImage;
   final Function(File) onSendFile;
@@ -37,8 +40,10 @@ class _ChatScreenState extends State<ChatScreen> {
   final ImagePicker _picker = ImagePicker();
   bool _isLoading = false;
   bool _showEmojiPicker = false;
+  final ChatService _chatService = ChatService();
+  StreamSubscription<Message>? _msgSub;
   
-  List<Message> get _messages => widget.chat.messages ?? [];
+  final List<Message> _messages = [];
   
   // Settings menu options
   final List<Map<String, dynamic>> _settingsOptions = [
@@ -83,9 +88,16 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Subscribe to realtime messages for this peer chat
+    _msgSub = _chatService
+        .getMessageStream(widget.currentUserId, widget.chat.id)
+        .listen((msg) {
+      setState(() {
+        _messages.add(msg);
+      });
       _scrollToBottom();
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
   
   @override
@@ -102,6 +114,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _messageController.dispose();
     _scrollController.dispose();
+    _msgSub?.cancel();
     super.dispose();
   }
 
@@ -109,15 +122,18 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
-    final message = Message(
+    // Optimistically append and send via ChatService
+    final msg = Message(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       senderId: widget.currentUserId,
+      receiverId: widget.chat.id,
       text: text,
       timestamp: DateTime.now(),
-      isRead: false,
+      status: MessageStatus.sending,
+      type: MessageType.text,
     );
-
-    widget.onSendMessage(message);
+    setState(() => _messages.add(msg));
+    unawaited(_chatService.sendMessage(receiverId: widget.chat.id, text: text));
     _messageController.clear();
     _scrollToBottom();
   }

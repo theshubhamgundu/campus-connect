@@ -2,8 +2,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class ServerConfig {
   // Default configuration
-  static const String _defaultIp = '192.168.1.100';
-  static const int _defaultPort = 3000;
+  static const String _defaultIp = '192.168.137.167';
+  static const int _defaultPort = 8083;
   static const bool _defaultUseHttps = false;
   
   // Keys for SharedPreferences
@@ -89,11 +89,17 @@ class ServerConfig {
   // Check if the current server is a local server
   static bool get isLocalServer {
     final ip = _isInitialized ? _serverIp : _defaultIp;
-    return ip == 'localhost' || 
-           ip == '127.0.0.1' ||
-           ip.startsWith('192.168.') ||
-           ip.startsWith('10.0.') ||
-           ip.startsWith('172.') && ip.split('.')[1] >= '16' && ip.split('.')[1] <= '31';
+    if (ip == 'localhost' || ip == '127.0.0.1') return true;
+    if (ip.startsWith('192.168.')) return true;
+    if (ip.startsWith('10.')) return true;
+    if (ip.startsWith('172.')) {
+      final parts = ip.split('.');
+      if (parts.length >= 2) {
+        final second = int.tryParse(parts[1]) ?? -1;
+        if (second >= 16 && second <= 31) return true;
+      }
+    }
+    return false;
   }
 
   // Timeout duration for API requests

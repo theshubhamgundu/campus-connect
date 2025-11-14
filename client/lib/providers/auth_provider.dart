@@ -35,7 +35,7 @@ class AuthProvider with ChangeNotifier {
         throw Exception('Google sign in was cancelled');
       }
 
-      final GoogleSignInAuthentication googleAuth = 
+      final GoogleSignInAuthentication googleAuth =
           await googleUser.authentication;
 
       // Call your authentication endpoint
@@ -43,7 +43,6 @@ class AuthProvider with ChangeNotifier {
         Uri.parse('$_baseUrl/auth/google'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'accessToken': googleAuth.accessToken,
           'idToken': googleAuth.idToken,
         }),
       );

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'websocket_service.dart';
@@ -17,10 +18,32 @@ class ChatService {
   Future<void> initialize() async {
     await _webSocketService.initialize();
     
-    // Listen for incoming messages
-    _webSocketService.addListener(WebSocketService.eventMessage, (data) {
-      final message = Message.fromJson(data);
-      _handleIncomingMessage(message);
+    // Listen for incoming messages from server (type: 'message')
+    _webSocketService.addListener('message', (data) {
+      try {
+        // If payload is already our client format
+        if (data is Map<String, dynamic> && data.containsKey('senderId')) {
+          final message = Message.fromJson(data as Map<String, dynamic>);
+          _handleIncomingMessage(message);
+          return;
+        }
+        // Server format: {type:'message', from, to, text, ts}
+        final from = (data['from'] ?? '') as String;
+        final to = (data['to'] ?? '') as String;
+        final text = (data['text'] ?? '') as String;
+        final ts = (data['ts'] ?? DateTime.now().toIso8601String()) as String;
+        if (from.isEmpty || to.isEmpty) return;
+        final msg = Message(
+          id: DateTime.now().microsecondsSinceEpoch.toString(),
+          senderId: from,
+          receiverId: to,
+          text: text,
+          timestamp: DateTime.tryParse(ts) ?? DateTime.now(),
+          status: MessageStatus.sent,
+          type: MessageType.text,
+        );
+        _handleIncomingMessage(msg);
+      } catch (_) {}
     });
 
     // Listen for file transfers
@@ -50,10 +73,10 @@ class ChatService {
       replyToMessageId: replyToMessageId,
     );
 
-    await _webSocketService.send(
-      WebSocketService.eventMessage,
-      message.toJson(),
-    );
+    await _webSocketService.sendType('message', {
+      'to': receiverId,
+      'text': text,
+    });
 
     // Update local state
     _handleIncomingMessage(message);
@@ -183,7 +206,8 @@ class ChatService {
 
   // Helper methods
   String _getChatId(String userId1, String userId2) {
-    return [userId1, userId2]..sort();
+    final parts = [userId1, userId2]..sort();
+    return parts.join(':');
   }
 
   String _getMimeType(String fileName) {

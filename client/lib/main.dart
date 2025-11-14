@@ -1,7 +1,12 @@
+import 'dart:async' show unawaited;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'services/websocket_service.dart';
+import 'config/server_config.dart';
+import 'services/identity_service.dart';
+import 'services/chat_service.dart';
 
 // Screens
 import 'screens/splash_screen.dart';
@@ -36,6 +41,14 @@ void main() async {
     useMaterial3: true,
     colorScheme: ColorScheme.fromSeed(seedColor: Colors.purple),
   );
+
+  // Initialize server config and start realtime connection in background
+  await IdentityService.init();
+  await ServerConfig.initialize();
+  // Fire-and-forget; it auto-checks Wi‑Fi and connects on LAN
+  unawaited(WebSocketService().initialize());
+  // Initialize chat layer listeners
+  unawaited(ChatService().initialize());
 
   // Run the app
   runApp(

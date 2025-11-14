@@ -25,7 +25,7 @@ class PlaceholderImage extends StatelessWidget {
       height: height,
       color: backgroundColor.withOpacity(0.2),
       alignment: Alignment.center,
-      child: assetPath != null
+      child: (assetPath != null && assetPath!.isNotEmpty)
           ? Image.asset(
               assetPath!,
               width: width,

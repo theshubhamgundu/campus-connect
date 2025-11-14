@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../services/websocket_service.dart';
 import 'chats_screen.dart';
 import 'groups_screen.dart';
 import 'profile_screen.dart';
@@ -14,6 +16,9 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
   bool _isLoading = true;
+  bool _lastConnected = false;
+  DateTime _lastToastAt = DateTime.fromMillisecondsSinceEpoch(0);
+  StreamSubscription<bool>? _connSub;
   
   final List<Widget> _screens = [
     const ChatsScreen(),
@@ -25,6 +30,26 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initializeApp();
+    // Subscribe to connection changes for throttled SnackBars
+    final ws = WebSocketService();
+    _lastConnected = ws.isConnected;
+    _connSub = ws.connectionState.listen((connected) {
+      final now = DateTime.now();
+      final elapsed = now.difference(_lastToastAt).inSeconds;
+      if (connected != _lastConnected && elapsed >= 8) {
+        _lastToastAt = now;
+        _lastConnected = connected;
+        if (!mounted) return;
+        final text = connected
+            ? 'Connected to CampusNet'
+            : 'Disconnected — Connect to CampusNet Wi‑Fi';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(text), duration: const Duration(seconds: 2)),
+        );
+      } else {
+        _lastConnected = connected;
+      }
+    });
   }
 
   Future<void> _initializeApp() async {
@@ -44,6 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final ws = WebSocketService();
     return Scaffold(
       appBar: AppBar(
         title: const Text('CampusNet'),
@@ -78,14 +104,54 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).scaffoldBackgroundColor,
-              ),
-              child: IndexedStack(
-                index: _selectedIndex,
-                children: _screens,
-              ),
+          : Column(
+              children: [
+                // Connection banner
+                StreamBuilder<bool>(
+                  stream: ws.connectionState,
+                  initialData: ws.isConnected,
+                  builder: (context, snapshot) {
+                    final connected = snapshot.data ?? false;
+                    if (connected) return const SizedBox(height: 0);
+                    return Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                      color: Colors.orange,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.wifi_off, color: Colors.white),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Disconnected from CampusNet. Reconnecting...',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: ws.isConnecting ? null : ws.reconnect,
+                            child: const Text(
+                              'Retry',
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+                // Content
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                    ),
+                    child: IndexedStack(
+                      index: _selectedIndex,
+                      children: _screens,
+                    ),
+                  ),
+                ),
+              ],
             ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,

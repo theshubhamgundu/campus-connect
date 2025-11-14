@@ -1,825 +1,464 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
-import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:web_socket_channel/status.dart' as status;
+import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:logger/logger.dart';
+import 'package:network_info_plus/network_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/status.dart' as status;
+import '../config/server_config.dart';
+import 'identity_service.dart';
+
+typedef MessageCallback = void Function(dynamic data);
+typedef FileProgressCallback = void Function(int sent, int total);
 
 class WebSocketService {
   static final WebSocketService _instance = WebSocketService._internal();
   factory WebSocketService() => _instance;
-  
+
+  WebSocketService._internal();
+
   final Logger _logger = Logger(
-    printer: PrettyPrinter(
-      methodCount: 0,
-      errorMethodCount: 5,
-      lineLength: 50,
-      colors: true,
-    ),
+    printer: PrettyPrinter(methodCount: 0, errorMethodCount: 5, lineLength: 80, colors: true),
   );
 
-  late WebSocketChannel _channel;
-  final StreamController<dynamic> _messageController = 
-      StreamController<dynamic>.broadcast();
-  final StreamController<bool> _connectionStateController = 
-      StreamController<bool>.broadcast();
-  final List<dynamic> _messageQueue = [];
-  
-  bool _isConnected = false;
-  bool _isConnecting = false;
-  Timer? _reconnectTimer;
-  int _reconnectAttempts = 0;
-  static const int _maxReconnectAttempts = 5;
-  static const Duration _reconnectDelay = Duration(seconds: 2);
-  String? _url;
+  WebSocketChannel? _channel;
+  StreamSubscription? _subscription;
   StreamSubscription? _connectivitySubscription;
 
-  bool get isConnected => _isConnected;
+  final StreamController<dynamic> _messageController = StreamController<dynamic>.broadcast();
+  final StreamController<bool> _connectionStateController = StreamController<bool>.broadcast();
+
+  final List<Map<String, dynamic>> _messageQueue = [];
+  final Map<String, List<MessageCallback>> _listeners = {};
+  final Map<String, Completer<dynamic>> _pendingRequests = {};
+
+  String? _userId;
+  bool _isConnected = false;
+  bool _isConnecting = false;
+  int _reconnectAttempts = 0;
+  Timer? _reconnectTimer;
+  Timer? _heartbeatTimer;
+  DateTime _lastHeartbeat = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // File receive buffers
+  final Map<String, Map<int, Uint8List>> _fileChunks = {};
+  final Map<String, Map<String, dynamic>> _fileMeta = {};
+
+  // Public streams
   Stream<dynamic> get messageStream => _messageController.stream;
   Stream<bool> get connectionState => _connectionStateController.stream;
+  bool get isConnected => _isConnected;
+  bool get isConnecting => _isConnecting;
 
-  WebSocketService._internal() {
-    _initConnectivityListener();
-  }
-
-  void _initConnectivityListener() {
-    _connectivitySubscription = Connectivity()
-        .onConnectivityChanged
-        .listen((ConnectivityResult result) {
-      _logger.i('Connectivity changed: $result');
-      if (result != ConnectivityResult.none) {
-        if (!_isConnected && !_isConnecting) {
-          _reconnect();
-        }
-        _reconnect();
-      }
-    });
-  }
-
-  Future<void> connect(String url) async {
+  // Initialize and attempt connection when on CampusNet Wi‑Fi
+  Future<void> initialize() async {
     if (_isConnected || _isConnecting) return;
-    _url = url;
-    _isConnecting = true;
-    _updateConnectionState();
-    
-    _logger.i('Connecting to WebSocket at $url');
+    final prefs = await SharedPreferences.getInstance();
+    _userId = prefs.getString('userId');
+    // Derive a default userId from device IP if none stored yet
+    if (_userId == null || _userId!.isEmpty) {
+      try {
+        final networkInfo = NetworkInfo();
+        final wifiIP = await networkInfo.getWifiIP();
+        if (wifiIP != null && wifiIP.isNotEmpty) {
+          _userId = 'ip:$wifiIP';
+          await prefs.setString('userId', _userId!);
+        }
 
-    try {
-      // Cancel any existing connection
-      await _channel?.sink?.close();
-
-      _channel = WebSocketChannel.connect(Uri.parse(_url!));
-      
-      _channel.stream.listen(
-        _handleMessage,
-        onError: _handleError,
-        onDone: _handleDone,
-        cancelOnError: true,
-      );
-
-      _isConnected = true;
-      _reconnectAttempts = 0;
-      _connectionStateController.add(true);
-      _processMessageQueue();
-      _logger.i('WebSocket connected to $_url');
-    } catch (e) {
-      _handleError(e);
-    } finally {
-      _isConnecting = false;
-    }
-  }
-
-  void _handleMessage(dynamic message) {
-    try {
-      final decoded = jsonDecode(message);
-      _messageController.add(decoded);
-    } catch (e) {
-      _logger.e('Error decoding message: $e');
-    }
-  }
-
-  void _handleError(dynamic error) {
-    _logger.e('WebSocket error: $error');
-    _isConnected = false;
-    _connectionStateController.add(false);
-    _scheduleReconnect();
-  }
-
-  void _handleDone() {
-    if (_channel.closeCode != status.normalClosure) {
-      _logger.w('WebSocket connection closed unexpectedly');
-      _isConnected = false;
-      _connectionStateController.add(false);
+  // Send a raw server message with top-level 'type' (e.g., type: 'message')
+  Future<void> sendType(String type, Map<String, dynamic> fields) async {
+    final map = {'type': type, ...fields};
+    if (!_isConnected) {
+      _enqueue(type, map, waitForResponse: false);
       _scheduleReconnect();
-    }
-  }
-
-  void _scheduleReconnect() {
-    if (_reconnectTimer != null || _reconnectAttempts >= _maxReconnectAttempts) {
-      if (_reconnectAttempts >= _maxReconnectAttempts) {
-        _logger.e('Max reconnection attempts reached');
-        _messageController.add({
-          'type': 'error',
-          'message': 'Cannot connect to server. Please check your internet connection and try again.',
-          'timestamp': DateTime.now().toIso8601String(),
-        });
-      }
       return;
     }
-
-    _reconnectAttempts++;
-    final delay = _reconnectDelay * (1 + _reconnectAttempts); // Exponential backoff
-    _logger.i('Scheduling reconnection attempt $_reconnectAttempts in ${delay.inSeconds}s');
-    
-    _reconnectTimer = Timer(delay, _reconnect);
-        _connect();
-      }
-    });
+    _channel!.sink.add(jsonEncode(map));
+  }
+      } catch (_) {}
+    }
+    _setupNetworkListeners();
+    await _checkNetworkAndConnect();
   }
 
-  void _reconnect() {
-    if (!_isConnected && _url != null) {
-      _connect();
-    }
-  }
-
-  void _processMessageQueue() {
-    while (_messageQueue.isNotEmpty && _isConnected) {
-      final message = _messageQueue.removeAt(0);
-      send(message);
-    }
-  }
-
-  void send(dynamic message) {
-    try {
-      if (_isConnected) {
-        final encoded = jsonEncode(message);
-        _channel.sink.add(encoded);
-      } else {
-        _messageQueue.add(message);
-        _reconnect();
-      }
-    } catch (e) {
-      _logger.e('Error sending message: $e');
-    }
+  Future<void> connect() async {
+    await initialize();
   }
 
   Future<void> disconnect() async {
     _reconnectTimer?.cancel();
-    _connectivitySubscription?.cancel();
-    await _channel.sink.close(status.normalClosure);
+    _heartbeatTimer?.cancel();
+    await _subscription?.cancel();
+    await _channel?.sink.close(status.normalClosure);
+    _subscription = null;
+    _channel = null;
     _isConnected = false;
+    _isConnecting = false;
     _connectionStateController.add(false);
-    _logger.i('WebSocket disconnected');
+    _notifyConnectionStatus(false, message: 'Disconnected from CampusNet');
   }
 
-  @override
-  void dispose() {
-    disconnect();
-    _messageController.close();
-    _connectionStateController.close();
-  }
-  bool get isConnecting => _isConnecting;
-  String? get lastError => _lastError;
-  
-  // Message queue for when offline
-  final List<Map<String, dynamic>> _messageQueue = [];
-  bool _isProcessingQueue = false;
-
-  WebSocketChannel? _channel;
-  StreamSubscription? _subscription;
-  bool _isConnected = false;
-  final Map<String, List<MessageCallback>> _listeners = {};
-  final Map<String, Completer<dynamic>> _pendingRequests = {};
-  String? _userId;
-  Timer? _reconnectTimer;
-  int _reconnectAttempts = 0;
-
-  // WebSocket events
-  static const String eventMessage = 'message';
-  static const String eventCall = 'call';
-  static const String eventFile = 'file';
-  static const String eventTyping = 'typing';
-  static const String eventOnline = 'online';
-  static const String eventError = 'error';
-
-  // Initialize WebSocket connection
-  Future<void> initialize() async {
-    if (_isConnected) return;
-
-    final prefs = await SharedPreferences.getInstance();
-    _userId = prefs.getString('userId');
-
-    // Check network connectivity and attempt to connect
-    await _checkNetworkAndConnect();
-    
-    // Set up listeners for network changes
-    _setupNetworkListeners();
-  }
-
-  // Check network and connect if on CampusNet
-  Future<void> _checkNetworkAndConnect() async {
-    try {
-      final connectivity = await Connectivity().checkConnectivity();
-      if (connectivity == ConnectivityResult.wifi) {
-        final networkInfo = NetworkInfo();
-        String? wifiIP;
-        
-        try {
-          wifiIP = await networkInfo.getWifiIP();
-        } catch (e) {
-          debugPrint('Error getting WiFi IP: $e');
-          _notifyConnectionStatus(false, message: 'Network error. Please check your connection');
-          return;
-        }
-        
-        // Check if connected to CampusNet WiFi
-        if (wifiIP != null && wifiIP.startsWith('192.168.137.')) {
-          await _connect();
-          _setupReconnection();
-        } else {
-          _notifyConnectionStatus(false, message: 'Please connect to CampusNet WiFi (${ServerConfig.serverIp})');
-        }
-      } else {
-        _notifyConnectionStatus(false, message: 'Please connect to CampusNet WiFi (${ServerConfig.serverIp})');
-      }
-    } catch (e) {
-      debugPrint('Error in network check: $e');
-      _notifyConnectionStatus(false, message: 'Connection error. Retrying...');
-      // Retry after delay
-      await Future.delayed(const Duration(seconds: 2));
-      if (!_isConnected) {
-        await _checkNetworkAndConnect();
-      }
-    }
-  }
-
-  // Set up network change listeners
   void _setupNetworkListeners() {
-    // Listen for network state changes
-    Connectivity().onConnectivityChanged.listen((result) async {
+    _connectivitySubscription?.cancel();
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) async {
       if (result == ConnectivityResult.wifi) {
         await _checkNetworkAndConnect();
       } else {
-        _handleDisconnect();
-        _notifyConnectionStatus(false, message: 'Please connect to CampusNet WiFi');
+        await disconnect();
       }
     });
   }
 
-  Future<void> _connect() async {
-    if (_isConnecting) return;
-    _isConnecting = true;
-    
+  Future<void> _checkNetworkAndConnect() async {
     try {
-      _logger.i('🔌 Connecting to WebSocket at ${ServerConfig.webSocketUrl}');
-      
-      // Close any existing connection
-      await _disconnect();
-      
-      // Create new connection with timeout
-      final completer = Completer<WebSocketChannel>();
-      final timer = Timer(const Duration(seconds: 10), () {
-        if (!completer.isCompleted) {
-          completer.completeError(TimeoutException('Connection timeout'));
-        }
-      });
-      
-      // Initialize WebSocket connection
-      try {
-        final channel = WebSocketChannel.connect(
-          Uri.parse('${ServerConfig.webSocketUrl}?userId=$_userId&device=flutter&v=1.0'),
-        );
-        
-        // Wait for the connection to be established
-        await channel.ready;
-        timer.cancel();
-        
-        if (!completer.isCompleted) {
-          completer.complete(channel);
-        }
-      } catch (e) {
-        timer.cancel();
-        if (!completer.isCompleted) {
-          completer.completeError(e);
-        }
-        rethrow;
+      final connectivity = await Connectivity().checkConnectivity();
+      if (connectivity != ConnectivityResult.wifi) {
+        _notifyConnectionStatus(false, message: 'Please connect to CampusNet Wi‑Fi');
+        return;
       }
-      
-      // Get the connected channel
-      _channel = await completer.future;
-      
-      // Set up listeners
+
+      // Ensure we are on a private LAN (e.g., 192.168.137.x hotspot)
+      final networkInfo = NetworkInfo();
+      final wifiIP = await networkInfo.getWifiIP();
+      if (wifiIP == null ||
+          !(wifiIP.startsWith('192.168.') || wifiIP.startsWith('10.') || wifiIP.startsWith('172.'))) {
+        _notifyConnectionStatus(false, message: 'Please connect to CampusNet Wi‑Fi');
+        return;
+      }
+
+      if (!_isConnected && !_isConnecting) {
+        await _openChannel();
+      }
+    } catch (e, st) {
+      _logger.e('Network check failed', error: e, stackTrace: st);
+      _notifyConnectionStatus(false, message: 'Network error. Retrying...');
+      _scheduleReconnect();
+    }
+  }
+
+  Future<void> _openChannel() async {
+    _isConnecting = true;
+    final url = Uri.parse('${ServerConfig.webSocketUrl}?userId=${Uri.encodeQueryComponent(_userId ?? '')}&device=flutter&v=1');
+    _logger.i('Connecting to $url');
+    try {
+      // Close any existing channel
+      await _subscription?.cancel();
+      await _channel?.sink.close(status.goingAway);
+
+      final channel = WebSocketChannel.connect(url);
+      try { await channel.ready; } catch (_) {}
+
+      _channel = channel;
       _subscription = _channel!.stream.listen(
-        _handleMessage,
-        onError: _handleError,
-        onDone: _handleDisconnect,
+        _onMessage,
+        onError: _onError,
+        onDone: _onDone,
         cancelOnError: true,
       );
 
-      // Connection established
       _isConnected = true;
       _isConnecting = false;
       _reconnectAttempts = 0;
-      _lastHeartbeat = DateTime.now();
-      _startHeartbeat();
-      
+      _connectionStateController.add(true);
       _notifyConnectionStatus(true, message: 'Connected to CampusNet');
-      _logger.i('✅ WebSocket connected successfully');
-      
-      // Process any queued messages
-      _processMessageQueue();
-      
-    } catch (e, stackTrace) {
-      _isConnecting = false;
-      _logger.e('❌ WebSocket connection error', error: e, stackTrace: stackTrace);
-      _handleDisconnect();
-      rethrow;
-    }
-  }
-  
-  Future<void> _disconnect() async {
-    try {
-      _logger.d('Disconnecting WebSocket...');
-      await _subscription?.cancel();
-      await _channel?.sink.close(status.goingAway);
-    } catch (e, stackTrace) {
-      _logger.e('Error during disconnect', error: e, stackTrace: stackTrace);
-    } finally {
-      _subscription = null;
-      _channel = null;
-      _isConnected = false;
-      _isConnecting = false;
-      _heartbeatTimer?.cancel();
-      _logger.d('WebSocket disconnected');
-    }
-  }
-  
-  void _startHeartbeat() {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      if (!_isConnected) {
-        timer.cancel();
-        return;
-      }
-      
-      // Check if we've missed too many heartbeats
-      if (DateTime.now().difference(_lastHeartbeat) > const Duration(seconds: 90)) {
-        _logger.w('Missed too many heartbeats, reconnecting...');
-        _handleDisconnect();
-        return;
-      }
-      
+      _startHeartbeat();
+      _drainQueue();
+      _logger.i('WebSocket connected');
+
+      // Send login handshake expected by server
       try {
-        // Send heartbeat
-        _channel?.sink.add(jsonEncode({
-          'event': 'heartbeat',
-          'data': {'timestamp': DateTime.now().millisecondsSinceEpoch},
-        }));
+        final identity = IdentityService.identityPayload(userId: _userId ?? '');
+        final payload = {
+          'type': 'login',
+          'userId': identity['userId'],
+          'displayName': identity['displayName'],
+        };
+        _channel?.sink.add(jsonEncode(payload));
       } catch (e) {
-        _logger.e('Failed to send heartbeat', e);
-        _handleError(e);
+        _logger.w('Failed to send login handshake: $e');
       }
-    });
-  }
-  
-  Future<void> _sendHeartbeat() async {
-    try {
-      await _channel?.sink.add(jsonEncode({
-        'event': 'heartbeat',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      }));
-    } catch (e) {
-      debugPrint('Error sending heartbeat: $e');
-      _handleDisconnect();
+    } catch (e, st) {
+      _isConnecting = false;
+      _logger.e('WebSocket connect failed', error: e, stackTrace: st);
+      _scheduleReconnect();
     }
   }
 
-  void _setupReconnection() {
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (timer) async {
-        if (!_isConnected && _reconnectAttempts < ServerConfig.maxReconnectAttempts) {
-          _reconnectAttempts++;
-          print('Attempting to reconnect... ($_reconnectAttempts/${ServerConfig.maxReconnectAttempts})');
-          await _connect();
-        } else if (_reconnectAttempts >= ServerConfig.maxReconnectAttempts) {
-          timer.cancel();
-          print('Max reconnection attempts reached');
-        }
-      },
-    );
-  }
-
-  void _handleMessage(dynamic message) {
+  void _onMessage(dynamic message) {
     try {
       if (message == null) return;
-      
-      // Handle ping/pong
-      if (message == 'ping') {
-        _channel?.sink.add('pong');
-        _lastHeartbeat = DateTime.now();
-        return;
-      } else if (message == 'pong') {
-        _lastHeartbeat = DateTime.now();
-        return;
-      }
-      
-      // Parse JSON message
-      final data = jsonDecode(message);
-      final String? event = data['event'];
-      final dynamic payload = data['data'];
-      final String? requestId = data['requestId'];
-      
-      if (event == 'heartbeat') {
-        _lastHeartbeat = DateTime.now();
-        return;
-      }
+      if (message == 'ping') { _channel?.sink.add('pong'); _lastHeartbeat = DateTime.now(); return; }
+      if (message == 'pong') { _lastHeartbeat = DateTime.now(); return; }
 
-      // Handle response to a specific request
+      final data = jsonDecode(message);
+      // Support both {type: ...} (server) and {event: ..., data: ...}
+      final event = (data['type'] ?? data['event']) as String?;
+      final payload = data.containsKey('data') ? data['data'] : data;
+      final requestId = data['requestId'];
+
+      if (event == 'heartbeat') { _lastHeartbeat = DateTime.now(); return; }
+
       if (requestId != null && _pendingRequests.containsKey(requestId)) {
         if (data['error'] != null) {
-          _pendingRequests[requestId]!.completeError(
-            ServerException(data['error']['code'] ?? 'UNKNOWN_ERROR', data['error']['message'] ?? 'An error occurred'),
-          );
+          _pendingRequests.remove(requestId)?.completeError(data['error']);
         } else {
-          _pendingRequests[requestId]!.complete(payload);
+          _pendingRequests.remove(requestId)?.complete(payload);
         }
-        _pendingRequests.remove(requestId);
         return;
       }
 
-      // Notify all listeners for this event
+      // Handle file transfer receive
+      if (event == 'file_chunk') {
+        _handleIncomingFileChunk(payload);
+        return;
+      }
+      if (event == 'file_complete') {
+        unawaited(_finalizeIncomingFile(payload));
+        return;
+      }
+
       if (event != null && _listeners.containsKey(event)) {
-        for (final callback in List<MessageCallback>.from(_listeners[event]!)) {
-          try {
-            callback(payload);
-          } catch (e, stackTrace) {
-            debugPrint('Error in $event listener: $e');
-            debugPrint('Stack trace: $stackTrace');
-          }
+        for (final cb in List<MessageCallback>.from(_listeners[event]!)) {
+          cb(payload);
         }
       }
-    } catch (e, stackTrace) {
-      debugPrint('Error handling WebSocket message: $e');
-      debugPrint('Message: $message');
-      debugPrint('Stack trace: $stackTrace');
-      
-      // Notify error listeners
-      if (_listeners.containsKey('error')) {
-        for (final callback in _listeners['error']!) {
-          callback({
-            'error': 'MESSAGE_PROCESSING_ERROR',
-            'message': 'Failed to process message: ${e.toString()}',
-            'originalMessage': message,
-          });
-        }
-      }
+
+      _messageController.add(data);
+    } catch (e, st) {
+      _logger.e('Message handling error', error: e, stackTrace: st);
     }
-  }
-  
-  Future<void> _waitForConnection() async {
-    if (_isConnected) return;
-    
-    final completer = Complever<void>();
-    final timer = Timer(const Duration(seconds: 10), () {
-      if (!completer.isCompleted) {
-        completer.completeError(TimeoutException('Connection timeout'));
-      }
-    });
-    
-    void checkConnection() {
-      if (_isConnected) {
-        timer.cancel();
-        if (!completer.isCompleted) {
-          completer.complete();
-        }
-      }
-    }
-    
-    addConnectionListener(checkConnection);
-    await completer.future;
-    removeConnectionListener(checkConnection);
-  }
-  
-  void addConnectionListener(MessageCallback callback) {
-    addListener('connection', callback);
-  }
-  
-  void removeConnectionListener(MessageCallback callback) {
-    removeListener('connection', callback);
   }
 
-  void _handleError(dynamic error) {
-    print('WebSocket error: $error');
+  void _onError(dynamic error) {
+    _logger.e('WebSocket error: $error');
+    _handleDisconnect();
+  }
+
+  void _onDone() {
+    _logger.w('WebSocket closed');
     _handleDisconnect();
   }
 
   void _handleDisconnect() {
-    if (_isConnected || _isConnecting) {
-      _logger.w('WebSocket disconnected');
-      
-      // Clean up resources
-      _isConnected = false;
-      _isConnecting = false;
-      _heartbeatTimer?.cancel();
-      _subscription?.cancel();
-      
-      // Notify listeners about disconnection
-      final isFinalAttempt = _reconnectAttempts >= ServerConfig.maxReconnectAttempts;
-      _notifyConnectionStatus(
-        false, 
-        message: isFinalAttempt 
-            ? '⚠️ Connection Lost — Please check your WiFi connection (${ServerConfig.serverIp})'
-            : 'Reconnecting to CampusNet... (${_reconnectAttempts + 1}/${ServerConfig.maxReconnectAttempts})',
-      );
-      
-      // Attempt to reconnect if under max attempts
-      if (!isFinalAttempt) {
-        _reconnectAttempts++;
-        final delay = Duration(seconds: _calculateBackoff(_reconnectAttempts));
-        _logger.i('Will attempt to reconnect in ${delay.inSeconds} seconds...');
-        Future.delayed(delay, _checkNetworkAndConnect);
-      } else {
-        _logger.w('Max reconnection attempts reached');
+    if (!_isConnected && !_isConnecting) return;
+    _isConnected = false;
+    _isConnecting = false;
+    _heartbeatTimer?.cancel();
+    _connectionStateController.add(false);
+    _notifyConnectionStatus(false, message: 'Reconnecting to CampusNet...');
+    _scheduleReconnect();
+  }
+
+  void _scheduleReconnect() {
+    if (_isConnected || _isConnecting) return;
+    if (_reconnectAttempts >= ServerConfig.maxReconnectAttempts) {
+      _logger.w('Max reconnection attempts reached');
+      return;
+    }
+    _reconnectTimer?.cancel();
+    _reconnectAttempts++;
+    final delay = Duration(seconds: min(30, (1 << _reconnectAttempts))) + Duration(milliseconds: Random().nextInt(500));
+    _logger.i('Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts)');
+    _reconnectTimer = Timer(delay, _checkNetworkAndConnect);
+  }
+
+  // Public manual reconnect trigger for UI Retry
+  Future<void> reconnect() async {
+    if (_isConnecting) return;
+    _reconnectTimer?.cancel();
+    _reconnectAttempts = 0;
+    await _checkNetworkAndConnect();
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _lastHeartbeat = DateTime.now();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!_isConnected) { _heartbeatTimer?.cancel(); return; }
+      try {
+        // Send a simple ping string; server ignores non-JSON or can respond with pong if implemented
+        _channel?.sink.add('ping');
+      } catch (e) {
+        _logger.e('Heartbeat send failed: $e');
+        _handleDisconnect();
       }
+    });
+  }
+
+  // Public send API
+  Future<dynamic> send(String event, dynamic data, {bool waitForResponse = false}) async {
+    if (!_isConnected) {
+      _enqueue(event, data, waitForResponse: waitForResponse);
+      _scheduleReconnect();
+      if (waitForResponse) throw SocketException('Not connected');
+      return null;
+    }
+
+    final requestId = waitForResponse ? DateTime.now().microsecondsSinceEpoch.toString() : null;
+    final message = {
+      'event': event,
+      'data': data,
+      'requestId': requestId,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+
+    _channel!.sink.add(jsonEncode(message));
+    if (requestId == null) return null;
+
+    final completer = Completer<dynamic>();
+    _pendingRequests[requestId] = completer;
+    Timer(const Duration(seconds: 10), () {
+      if (_pendingRequests.remove(requestId) != null && !completer.isCompleted) {
+        completer.completeError(TimeoutException('No response from server'));
+      }
+    });
+    return completer.future;
+  }
+
+  // File send in chunks (server protocol: fileMeta then fileChunk)
+  Future<void> sendFile(String fileId, String fileName, Uint8List data, {required String receiverId, FileProgressCallback? onProgress}) async {
+    const chunkSize = 16 * 1024;
+    final total = data.length;
+    // Send metadata first
+    final meta = {
+      'type': 'fileMeta',
+      'to': receiverId,
+      'fileId': fileId,
+      'name': fileName,
+      'size': total,
+      'mime': 'application/octet-stream',
+    };
+    _channel?.sink.add(jsonEncode(meta));
+
+    var sent = 0;
+    var seq = 0;
+    for (var i = 0; i < total; i += chunkSize) {
+      final end = min(i + chunkSize, total);
+      final chunk = data.sublist(i, end);
+      final eof = end >= total;
+      final message = {
+        'type': 'fileChunk',
+        'to': receiverId,
+        'fileId': fileId,
+        'seq': seq,
+        'eof': eof,
+        'dataBase64': base64Encode(chunk),
+      };
+      _channel?.sink.add(jsonEncode(message));
+      sent = end;
+      seq++;
+      onProgress?.call(sent, total);
+      await Future.delayed(const Duration(milliseconds: 2));
     }
   }
-  
-  int _calculateBackoff(int attempt) {
-    // Exponential backoff with jitter
-    final baseDelay = 1;
-    final maxDelay = 30; // 30 seconds max delay
-    final delay = (baseDelay * pow(2, attempt - 1)).toInt();
-    final jitter = Random().nextInt(3); // Add 0-2 seconds of jitter
-    return min(delay + jitter, maxDelay);
+
+  // Listener helpers
+  void addListener(String event, MessageCallback callback) {
+    _listeners.putIfAbsent(event, () => []).add(callback);
+  }
+
+  void removeListener(String event, MessageCallback callback) {
+    _listeners[event]?.remove(callback);
+    if (_listeners[event]?.isEmpty == true) _listeners.remove(event);
   }
 
   void _notifyConnectionStatus(bool isConnected, {String? message}) {
     if (_listeners.containsKey('connection')) {
-      for (final callback in _listeners['connection']!) {
-        callback({
-          'isConnected': isConnected,
-          'message': message ?? (isConnected ? 'Connected to CampusNet' : 'Disconnected from CampusNet'),
-          'serverIp': ServerConfig.serverIp,
-        });
+      for (final cb in List<MessageCallback>.from(_listeners['connection']!)) {
+        cb({'isConnected': isConnected, 'message': message, 'server': ServerConfig.baseUrl});
       }
     }
   }
 
-  // Send a message through WebSocket with retry logic
-  Future<dynamic> send(
-    String event, 
-    dynamic data, {
-    bool waitForResponse = false,
-    int maxRetries = 2,
-    bool queueIfOffline = true,
-  }) async {
-    if (!_isConnected) {
-      if (queueIfOffline) {
-        // Queue the message if we're offline
-        _enqueueMessage(event, data, waitForResponse: waitForResponse);
-        
-        if (_reconnectAttempts < ServerConfig.maxReconnectAttempts) {
-          await _checkNetworkAndConnect();
-        }
-        
-        if (waitForResponse) {
-          throw SocketException('Message queued for delivery when online');
-        }
-        return null;
-      } else {
-        throw SocketException('Not connected to CampusNet');
-      }
-    }
-    
-    try {
-      // If this is a critical message, ensure it's delivered
-      if (waitForResponse) {
-        return await _sendWithRetry(event, data, maxRetries);
-      }
-      
-      // For non-critical messages, just send without waiting for response
-      return _sendMessage(event, data);
-    } catch (e) {
-      _logger.e('Error sending message', error: e);
-      rethrow;
-    }
+  void _enqueue(String event, dynamic data, {bool waitForResponse = false}) {
+    _messageQueue.add({'event': event, 'data': data, 'waitForResponse': waitForResponse, 'timestamp': DateTime.now().toIso8601String()});
   }
-  
-  void _enqueueMessage(String event, dynamic data, {bool waitForResponse = false}) {
-    _messageQueue.add({
-      'event': event,
-      'data': data,
-      'timestamp': DateTime.now().toIso8601String(),
-      'waitForResponse': waitForResponse,
-    });
-    _logger.d('Message queued. Queue size: ${_messageQueue.length}');
-  }
-  
-  Future<void> _processMessageQueue() async {
-    if (_messageQueue.isEmpty || _isProcessingQueue || !_isConnected) {
-      return;
-    }
-    
-    _isProcessingQueue = true;
-    
-    try {
-      _logger.d('Processing message queue (${_messageQueue.length} items)');
-      
-      // Process messages in chunks to avoid blocking
-      final messagesToProcess = List<Map<String, dynamic>>.from(_messageQueue);
-      _messageQueue.clear();
-      
-      for (final message in messagesToProcess) {
-        try {
-          if (message['waitForResponse'] == true) {
-            await _sendWithRetry(
-              message['event'], 
-              message['data'],
-              maxRetries: 2,
-            );
-          } else {
-            await _sendMessage(message['event'], message['data']);
-          }
-          await Future.delayed(const Duration(milliseconds: 100)); // Rate limiting
-        } catch (e) {
-          _logger.e('Error processing queued message', error: e);
-          // Re-queue failed messages for next attempt
-          _messageQueue.add(message);
-        }
-      }
-    } finally {
-      _isProcessingQueue = false;
-      
-      // If there are still messages in the queue, schedule another processing run
-      if (_messageQueue.isNotEmpty) {
-        Future.delayed(const Duration(seconds: 1), _processMessageQueue);
-      }
-    }
-  }
-  
-  Future<dynamic> _sendWithRetry(String event, dynamic data, int maxRetries) async {
-    int attempt = 0;
-    dynamic lastError;
-    
-    while (attempt <= maxRetries) {
+
+  void _drainQueue() async {
+    while (_isConnected && _messageQueue.isNotEmpty) {
+      final m = _messageQueue.removeAt(0);
       try {
-        _logger.d('Sending message (attempt ${attempt + 1}/$maxRetries): $event');
-        
-        final response = await _sendMessage(event, data, waitForResponse: true)
-            .timeout(
-              const Duration(seconds: 10),
-              onTimeout: () => throw TimeoutException('Request timed out'),
-            );
-            
-        _logger.d('Message sent successfully: $event');
-        return response;
-        
-      } catch (e, stackTrace) {
-        attempt++;
-        lastError = e;
-        
-        if (attempt > maxRetries) {
-          _logger.e('Failed after $maxRetries retries for $event', 
-                   error: e, stackTrace: stackTrace);
-          rethrow;
-        }
-        
-        // Calculate backoff with jitter
-        final backoff = Duration(milliseconds: 1000 * pow(2, attempt).toInt());
-        final jitter = Duration(milliseconds: Random().nextInt(1000));
-        final delay = backoff + jitter;
-        
-        _logger.w('Retry $attempt/$maxRetries for $event in ${delay.inMilliseconds}ms', 
-                 error: e);
-        
-        // Try to reconnect if needed
-        if (!_isConnected) {
-          await _checkNetworkAndConnect();
-          // Wait a bit after reconnection attempt
-          await Future.delayed(const Duration(seconds: 1));
-        } else {
-          await Future.delayed(delay);
-        }
-      }
-    }
-    
-    throw lastError ?? Exception('Failed after $maxRetries retries');
-  }
-  
-  Future<dynamic> _sendMessage(String event, dynamic data, {bool waitForResponse = false}) async {
-    if (!_isConnected) {
-      throw SocketException('Not connected to CampusNet');
-    }
-
-    final String requestId = DateTime.now().millisecondsSinceEpoch.toString();
-    final message = {
-      'event': event,
-      'data': data,
-      'timestamp': DateTime.now().toIso8601String(),
-      'requestId': waitForResponse ? requestId : null,
-    };
-
-    _channel!.sink.add(jsonEncode(message));
-
-    if (waitForResponse) {
-      final completer = Completer<dynamic>();
-      _pendingRequests[requestId] = completer;
-      
-      // Set a timeout for the response
-      Future.delayed(const Duration(seconds: 10), () {
-        if (_pendingRequests.containsKey(requestId)) {
-          _pendingRequests.remove(requestId);
-          if (!completer.isCompleted) {
-            completer.completeError(TimeoutException('No response from server'));
-          }
-        }
-      });
-
-      return completer.future;
-    }
-
-    return null;
-  }
-
-  // Send a file in chunks
-  Future<void> sendFile(String fileId, String fileName, Uint8List fileData, 
-      {required String receiverId, FileProgressCallback? onProgress}) async {
-    const chunkSize = 16 * 1024; // 16KB chunks
-    final totalChunks = (fileData.length / chunkSize).ceil();
-    
-    for (var i = 0; i < totalChunks; i++) {
-      final start = i * chunkSize;
-      final end = (i + 1) * chunkSize > fileData.length 
-          ? fileData.length 
-          : (i + 1) * chunkSize;
-          
-      final chunk = fileData.sublist(start, end);
-      
-      await send('file_chunk', {
-        'fileId': fileId,
-        'fileName': fileName,
-        'chunkIndex': i,
-        'totalChunks': totalChunks,
-        'data': base64Encode(chunk),
-        'receiverId': receiverId,
-      });
-      
-      onProgress?.call(end, fileData.length);
-    }
-    
-    // Notify that file transfer is complete
-    await send('file_complete', {
-      'fileId': fileId,
-      'fileName': fileName,
-      'fileSize': fileData.length,
-      'receiverId': receiverId,
-    });
-  }
-
-  // Handle incoming calls
-  void handleIncomingCall(dynamic payload) {
-    // This would be implemented based on your call handling logic
-    // You would typically show an incoming call UI here
-    if (_listeners.containsKey(eventCall)) {
-      for (final callback in _listeners[eventCall]!) {
-        callback(payload);
+        await send(m['event'] as String, m['data'], waitForResponse: m['waitForResponse'] == true);
+        await Future.delayed(const Duration(milliseconds: 50));
+      } catch (e) {
+        _logger.w('Queue send failed; re-enqueue');
+        _messageQueue.insert(0, m);
+        break;
       }
     }
   }
 
-  // Add a listener for a specific event
-  void addListener(String event, MessageCallback callback) {
-    if (!_listeners.containsKey(event)) {
-      _listeners[event] = [];
+  void _handleIncomingFileChunk(dynamic payload) {
+    if (payload == null) return;
+    try {
+      final String fileId = payload['fileId']?.toString() ?? '';
+      final String fileName = payload['fileName']?.toString() ?? 'file.bin';
+      final int chunkIndex = payload['chunkIndex'] is int
+          ? payload['chunkIndex']
+          : int.tryParse(payload['chunkIndex']?.toString() ?? '0') ?? 0;
+      final int totalChunks = payload['totalChunks'] is int
+          ? payload['totalChunks']
+          : int.tryParse(payload['totalChunks']?.toString() ?? '0') ?? 0;
+      final String b64 = payload['data']?.toString() ?? '';
+
+      if (fileId.isEmpty || b64.isEmpty) return;
+
+      _fileMeta.putIfAbsent(fileId, () => {'fileName': fileName, 'totalChunks': totalChunks});
+      final chunks = _fileChunks.putIfAbsent(fileId, () => <int, Uint8List>{});
+      chunks[chunkIndex] = base64Decode(b64);
+    } catch (e, st) {
+      _logger.e('Failed to handle file_chunk', error: e, stackTrace: st);
     }
-    _listeners[event]!.add(callback);
   }
 
-  // Remove a listener
-  void removeListener(String event, MessageCallback callback) {
-    if (_listeners.containsKey(event)) {
-      _listeners[event]!.remove(callback);
-      if (_listeners[event]!.isEmpty) {
-        _listeners.remove(event);
+  Future<void> _finalizeIncomingFile(dynamic payload) async {
+    if (payload == null) return;
+    try {
+      final String fileId = payload['fileId']?.toString() ?? '';
+      if (fileId.isEmpty) return;
+
+      final meta = _fileMeta[fileId] ?? {};
+      final String fileName = meta['fileName']?.toString() ?? payload['fileName']?.toString() ?? 'file.bin';
+      final int totalChunks = meta['totalChunks'] is int
+          ? meta['totalChunks']
+          : int.tryParse(meta['totalChunks']?.toString() ?? payload['totalChunks']?.toString() ?? '0') ?? 0;
+      final chunks = _fileChunks[fileId] ?? {};
+
+      if (totalChunks == 0 || chunks.length != totalChunks) {
+        _logger.w('File not complete yet: $fileId (${chunks.length}/$totalChunks)');
+        return;
       }
+
+      final buffer = BytesBuilder(copy: false);
+      for (var i = 0; i < totalChunks; i++) {
+        final part = chunks[i];
+        if (part == null) {
+          _logger.w('Missing chunk $i for $fileId');
+          return;
+        }
+        buffer.add(part);
+      }
+
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsBytes(buffer.takeBytes(), flush: true);
+
+      _fileChunks.remove(fileId);
+      _fileMeta.remove(fileId);
+
+      // Notify listeners
+      if (_listeners.containsKey('file_saved')) {
+        for (final cb in List<MessageCallback>.from(_listeners['file_saved']!)) {
+          cb({'fileId': fileId, 'fileName': fileName, 'path': file.path});
+        }
+      }
+    } catch (e, st) {
+      _logger.e('Failed to finalize file', error: e, stackTrace: st);
     }
   }
-
-  // Clean up resources
-  Future<void> dispose() async {
-    _reconnectTimer?.cancel();
-    _subscription?.cancel();
-    await _channel?.sink.close();
-    _isConnected = false;
-    _listeners.clear();
-    _pendingRequests.clear();
-  }
-
-  // Getters
-  bool get isConnected => _isConnected;
-  String? get userId => _userId;
 }

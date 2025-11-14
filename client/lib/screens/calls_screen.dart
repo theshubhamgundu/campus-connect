@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../widgets/placeholder_image.dart';
 
 class Call {
   final String id;
@@ -31,7 +32,7 @@ class CallsScreen extends StatelessWidget {
       Call(
         id: '1',
         name: 'John Doe',
-        avatar: 'assets/images/avatar1.png',
+        avatar: '',
         time: now.subtract(const Duration(minutes: 30)),
         isIncoming: true,
         isVideo: false,
@@ -40,7 +41,7 @@ class CallsScreen extends StatelessWidget {
       Call(
         id: '2',
         name: 'Jane Smith',
-        avatar: 'assets/images/avatar2.png',
+        avatar: '',
         time: now.subtract(const Duration(hours: 2)),
         isIncoming: false,
         isVideo: true,
@@ -60,8 +61,14 @@ class CallsScreen extends StatelessWidget {
         return ListTile(
           leading: CircleAvatar(
             radius: 25,
-            backgroundImage: AssetImage(call.avatar),
-            child: call.avatar.isEmpty ? Text(call.name[0]) : null,
+            backgroundColor: Colors.grey.shade200,
+            child: ClipOval(
+              child: PlaceholderImage(
+                assetPath: call.avatar,
+                width: 50,
+                height: 50,
+              ),
+            ),
           ),
           title: Text(
             call.name,

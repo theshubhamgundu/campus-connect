@@ -65,10 +65,10 @@ class _LoginScreenState extends State<LoginScreen> {
               Column(
                 children: [
                   PlaceholderImage(
-                    'assets/images/app_logo.png',
+                    assetPath: null,
                     height: 120,
                     width: 120,
-                    placeholder: const Icon(Icons.account_balance_wallet, size: 60, color: Colors.blue),
+                    placeholderText: 'Logo',
                   ),
                   const SizedBox(height: 24),
                   Text(
@@ -208,9 +208,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         side: BorderSide(color: Colors.grey[300]!),
                       ),
                       icon: PlaceholderImage(
-                        'assets/images/google_logo.png',
+                        assetPath: null,
                         height: 24,
                         width: 24,
+                        placeholderText: 'G',
                       ),
                       label: const Text(
                         'Continue with Google',

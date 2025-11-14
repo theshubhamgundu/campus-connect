@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import '../services/websocket_service.dart';
+import '../services/chat_service.dart';
 import 'package:intl/intl.dart';
 import 'chat_screen.dart';
 import '../models/chat.dart';
+import '../widgets/placeholder_image.dart';
 
 
 class ChatsScreen extends StatelessWidget {
@@ -15,7 +18,7 @@ class ChatsScreen extends StatelessWidget {
         name: 'John Doe',
         lastMessage: 'Hey, how are you doing?',
         time: '10:30 AM',
-        avatar: 'assets/images/avatar1.png',
+        avatar: '',
         isOnline: true,
         unreadCount: 2,
       ),
@@ -24,7 +27,7 @@ class ChatsScreen extends StatelessWidget {
         name: 'Jane Smith',
         lastMessage: 'Meeting at 3 PM',
         time: 'Yesterday',
-        avatar: 'assets/images/avatar2.png',
+        avatar: '',
       ),
       // Add more dummy data as needed
     ];
@@ -41,8 +44,14 @@ class ChatsScreen extends StatelessWidget {
             children: [
               CircleAvatar(
                 radius: 25,
-                backgroundImage: AssetImage(chat.avatar),
-                child: chat.avatar.isEmpty ? Text(chat.name[0]) : null,
+                backgroundColor: Colors.grey.shade200,
+                child: ClipOval(
+                  child: PlaceholderImage(
+                    assetPath: chat.avatar,
+                    width: 50,
+                    height: 50,
+                  ),
+                ),
               ),
               if (chat.isOnline)
                 Positioned(
@@ -104,7 +113,10 @@ class ChatsScreen extends StatelessWidget {
                 builder: (context) => ChatScreen(
                   chat: chat,
                   onSendMessage: (message) {
-                    // Handle sending message
+                    ChatService().sendMessage(
+                      receiverId: chat.id,
+                      text: message.text,
+                    );
                   },
                   onSendImage: (file) {
                     // Handle sending image
@@ -115,7 +127,7 @@ class ChatsScreen extends StatelessWidget {
                   onUpdateProfile: (name, status) {
                     // Handle profile update
                   },
-                  currentUserId: 'current_user_id', // Replace with actual user ID
+                  currentUserId: WebSocketService().userId ?? 'unknown',
                 ),
               ),
             );
