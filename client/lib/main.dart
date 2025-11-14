@@ -7,9 +7,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
 import 'services/websocket_service.dart';
 import 'services/group_service.dart';
+import 'services/chat_service_v3.dart';
+import 'services/call_service_v2.dart';
 import 'config/server_config.dart';
 import 'services/identity_service.dart';
-import 'services/chat_service.dart';
 import 'providers/auth_provider.dart';
 
 // Screens
@@ -17,6 +18,7 @@ import 'screens/entry_screen.dart';
 import 'screens/login_screen_fixed.dart';
 import 'screens/home_screen.dart' as home_screen;
 import 'screens/onboarding/onboarding_screen.dart';
+import 'screens/incoming_call_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -56,12 +58,17 @@ void main() async {
   // Initialize providers
   final authProvider = AuthProvider();
   final webSocketService = WebSocketService();
+  final chatServiceV3 = ChatServiceV3();
+  final callService = CallService();
   
   // Note: Connection and discovery are handled by ConnectionService after login.
   // Keep WebSocketService instance available for legacy code paths.
   
-  // Initialize chat layer listeners
-  unawaited(ChatService().initialize());
+  // Initialize chat service with encryption (sets up WebSocket listener for incoming messages)
+  unawaited(chatServiceV3.initialize());
+  
+  // Initialize call service with encrypted signaling (sets up WebSocket listener for call events)
+  unawaited(callService.initialize());
   
   // Create GroupService instance
   final groupService = GroupService(webSocketService.channel, webSocketService.userId ?? 'user');
@@ -72,6 +79,8 @@ void main() async {
       providers: [
         ChangeNotifierProvider.value(value: authProvider),
         ChangeNotifierProvider.value(value: webSocketService),
+        ChangeNotifierProvider.value(value: chatServiceV3),
+        ChangeNotifierProvider.value(value: callService),
         Provider<GroupService>.value(value: groupService),
       ],
       child: MaterialApp(

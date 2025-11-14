@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../models/chat_message.dart';
 import '../models/online_user.dart';
 
 enum ConnectionStatus { connecting, connected, disconnected }
@@ -26,6 +25,7 @@ class ConnectionService {
 
   WebSocket? _ws;
   String? serverIp;
+  String? _localDeviceIp;
 
   // Current user info (set by init)
   String? _userId;
@@ -33,12 +33,17 @@ class ConnectionService {
   String? _role;
   String _deviceName = 'Android Device';
 
-  // Reconnect control
+  // Reconnect control - FIX #1: Only reconnect on actual errors
   bool _shouldReconnect = true;
   Timer? _reconnectTimer;
+  bool _isConnecting = false; // Prevent simultaneous connection attempts
 
   // Simple outgoing queue (string JSONs) when disconnected
   final List<String> _outgoingQueue = [];
+
+  // FIX #9: Track last online users fetch time to prevent spam
+  DateTime _lastOnlineUsersFetch = DateTime.fromMillisecondsSinceEpoch(0);
+  static const int _onlineUsersFetchIntervalMs = 30000; // 30 seconds minimum
 
   // Initialize connection service after user logs in locally
   Future<void> init({
@@ -54,6 +59,10 @@ class ConnectionService {
 
     print('ConnectionService: init for $_userId ($_role)');
 
+    // Get local device IP
+    _localDeviceIp = await _getLocalIp();
+    print('ConnectionService: local device IP: $_localDeviceIp');
+
     // Discover server (UDP) with 5s timeout
     serverIp = await discoverServer(timeout: const Duration(seconds: 5));
     serverIp ??= '192.168.137.1';
@@ -66,6 +75,30 @@ class ConnectionService {
 
   // Public getter for current user id
   String? get currentUserId => _userId;
+
+  // Public getter for current user name
+  String? get currentUserName => _name;
+
+  // Public getter for current user role
+  String? get currentUserRole => _role;
+
+  // Public getter for local device IP
+  String? get localDeviceIp => _localDeviceIp;
+
+  /// Get local device IP address by connecting to a remote address
+  /// (doesn't actually send data, just determines which local IP would be used)
+  Future<String?> _getLocalIp() async {
+    try {
+      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      socket.send(utf8.encode(''), InternetAddress('192.168.137.1'), 8082);
+      final address = socket.address.address;
+      socket.close();
+      return address;
+    } catch (e) {
+      print('Failed to get local IP: $e');
+      return null;
+    }
+  }
 
   /// UDP discovery. Sends a JSON discovery packet to broadcast port 8082 and
   /// waits for a response. Falls back to null on timeout.
@@ -143,11 +176,19 @@ class ConnectionService {
       print('WebSocket: serverIp is null, cannot connect');
       return;
     }
+    
+    // FIX #1: Prevent multiple simultaneous connection attempts
+    if (_isConnecting) {
+      print('WebSocket: Already connecting, skipping duplicate attempt');
+      return;
+    }
+    
     if (_ws != null) {
-      print('WebSocket: already connected or connecting');
+      print('WebSocket: Already connected, skipping');
       return;
     }
 
+    _isConnecting = true;
     final url = 'ws://$serverIp:8083/ws';
     _setStatus(ConnectionStatus.connecting);
 
@@ -157,6 +198,7 @@ class ConnectionService {
 
       print('Connected to WebSocket');
       _setStatus(ConnectionStatus.connected);
+      _isConnecting = false;
 
       // send login immediately
       _sendLogin();
@@ -171,13 +213,16 @@ class ConnectionService {
         _handleRawMessage(data);
       }, onDone: () {
         print('WebSocket done');
+        _isConnecting = false;
         _onDisconnected();
       }, onError: (err) {
         print('WebSocket error: $err');
+        _isConnecting = false;
         _onDisconnected();
       });
     } catch (e) {
       print('WebSocket connect failed: $e');
+      _isConnecting = false;
       _onDisconnected();
     }
   }
@@ -192,17 +237,21 @@ class ConnectionService {
 
   void _scheduleReconnect() {
     _reconnectTimer?.cancel();
-    // jittered backoff between 3-5 seconds
+    // FIX #1: Only reconnect if enabled
+    // Jittered backoff between 3-5 seconds
     const minMs = 3000;
     const maxMs = 5000;
     final wait = minMs + (DateTime.now().millisecondsSinceEpoch % (maxMs - minMs));
-    print('Scheduling reconnect in ${wait}ms');
+    print('Scheduling reconnect in ${wait}ms (will only attempt once on error)');
     _reconnectTimer = Timer(Duration(milliseconds: wait), () async {
       if (!_shouldReconnect) return;
       if (serverIp == null) {
         serverIp = await discoverServer(timeout: const Duration(seconds: 5)) ?? '192.168.137.1';
       }
-      await _connectWebSocket();
+      // Only attempt reconnect if not already connected or connecting
+      if (_ws == null && !_isConnecting) {
+        await _connectWebSocket();
+      }
     });
   }
 
@@ -226,7 +275,7 @@ class ConnectionService {
       final parsed = jsonDecode(txt) as Map<String, dynamic>;
       final type = parsed['type']?.toString() ?? '';
 
-      if (type == 'message' || type == 'chat') {
+      if (type == 'message' || type == 'chat' || type == 'chat_message') {
         // normalize incoming chat
         _incomingController.add(parsed);
         print('Incoming message from ${parsed['from']}: ${parsed['text'] ?? parsed['message']}');
@@ -258,11 +307,21 @@ class ConnectionService {
   }
 
   /// Request online users list from server and wait for response.
+  /// FIX #9: Throttled - only request every 30 seconds at minimum
   Future<List<dynamic>> fetchOnlineUsersRaw({Duration timeout = const Duration(seconds: 5)}) async {
     // If websocket is not connected, return empty list immediately
     if (_ws == null || connectionStatus.value != ConnectionStatus.connected) {
       return <dynamic>[];
     }
+
+    // FIX #9: Prevent spam - throttle to once per 30 seconds
+    final now = DateTime.now();
+    final msSinceLastFetch = now.difference(_lastOnlineUsersFetch).inMilliseconds;
+    if (msSinceLastFetch < _onlineUsersFetchIntervalMs) {
+      print('Throttled: Skipping online users fetch (last was ${msSinceLastFetch}ms ago)');
+      return <dynamic>[];
+    }
+    _lastOnlineUsersFetch = now;
 
     final completer = Completer<List<dynamic>>();
     StreamSubscription? sub;
@@ -319,7 +378,7 @@ class ConnectionService {
   /// Send chat message to specific userId. Non-blocking; queues if disconnected.
   Future<void> sendChatMessage(String toUserId, String message) async {
     final payload = {
-      'type': 'chat',
+      'type': 'chat_message',
       'from': _userId ?? 'unknown',
       'to': toUserId,
       'message': message,
@@ -328,6 +387,13 @@ class ConnectionService {
     final jsonStr = jsonEncode(payload);
     _sendRaw(jsonStr);
     print('Sent chat to $toUserId: $message');
+  }
+
+  /// Send raw JSON message (public interface for custom message types)
+  void sendMessage(Map<String, dynamic> payload) {
+    final jsonStr = jsonEncode(payload);
+    _sendRaw(jsonStr);
+    print('Sent message: ${payload['type']}');
   }
 
   /// Forcefully close connection (e.g., on logout)

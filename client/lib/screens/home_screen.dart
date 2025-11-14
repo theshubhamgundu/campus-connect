@@ -2,14 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
-import '../services/websocket_service.dart';
 import '../services/connection_service.dart';
+import '../services/chat_service_v2.dart';
 import '../providers/auth_provider.dart';
-import 'chats_screen.dart';
+import 'recent_chats_screen.dart';
 import 'groups/groups_screen.dart';
 import 'profile_screen.dart';
+import 'nearby_users_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -26,8 +26,9 @@ class _HomeScreenState extends State<HomeScreen> {
   VoidCallback? _connListener;
   
   final List<Widget> _screens = [
-    const ChatsScreen(),
+    const RecentChatsScreen(),
     const GroupsScreen(),
+    const NearbyUsersScreen(),
     const ProfileScreen(),
   ];
 
@@ -98,7 +99,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ws = WebSocketService();
     return Scaffold(
       appBar: AppBar(
         title: const Text('CampusNet'),
@@ -245,6 +245,27 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
               decoration: BoxDecoration(
                 color: _selectedIndex == 2 
+                    ? Theme.of(context).primaryColor.withOpacity(0.1) 
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.people_outline, size: 24),
+            ),
+            activeIcon: Container(
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).primaryColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.people, size: 24),
+            ),
+            label: 'Nearby',
+          ),
+          BottomNavigationBarItem(
+            icon: Container(
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+              decoration: BoxDecoration(
+                color: _selectedIndex == 3 
                     ? Theme.of(context).primaryColor.withOpacity(0.1) 
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(12),

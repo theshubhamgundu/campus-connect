@@ -7,10 +7,6 @@ import 'package:network_info_plus/network_info_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/user.dart';
 import '../services/logger_service.dart';
-import '../services/websocket_service.dart';
-import '../services/connection_service.dart';
-import '../services/network_service.dart';
-import '../services/wifi_service.dart';
 
 class AuthProvider with ChangeNotifier {
   static const String _userKey = 'current_user';
@@ -18,7 +14,6 @@ class AuthProvider with ChangeNotifier {
   static const String _hasLoggedInKey = 'has_logged_in';
   
   final NetworkInfo _networkInfo = NetworkInfo();
-  final WebSocketService _webSocketService = WebSocketService();
   
   bool _isLoading = false;
   String? _error;
@@ -139,8 +134,8 @@ class AuthProvider with ChangeNotifier {
   Future<bool> signUp({
     required String userId,
     required String name,
-    required String email,
-    required String password,
+    String? email,
+    String? password,
     required UserRole role,
     String? department,
   }) async {
@@ -174,7 +169,9 @@ class AuthProvider with ChangeNotifier {
       _isLoggedIn = true;
       _authToken = 'token_${DateTime.now().millisecondsSinceEpoch}';
       await _saveAuthState();
-      debugPrint('✓ User signed up: ${_currentUser?.userId}');
+      if (_currentUser != null) {
+        debugPrint('✓ User signed up: ${_currentUser!.userId}');
+      }
       
       // Do not start ConnectionService here; HomeScreen will start it.
       

@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import '../providers/auth_provider.dart';
-import 'login_screen_fixed.dart';
-import 'home_screen.dart' as home_screen;
-import 'onboarding/onboarding_screen.dart';
 
 /// Entry point screen that checks for auto-login and onboarding status
 class EntryScreen extends StatefulWidget {

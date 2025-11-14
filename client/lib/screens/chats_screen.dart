@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../models/chat.dart';
 import '../services/chat_service.dart';
-import '../providers/auth_provider.dart';
 import 'chat_screen.dart';
 
 class ChatsScreen extends StatefulWidget {

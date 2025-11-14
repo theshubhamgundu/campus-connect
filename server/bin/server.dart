@@ -716,6 +716,9 @@ void _handleSocket(ServerState state, WebSocket ws, String clientIp) {
         case 'get_online_users':
           _handleGetOnlineUsers(state, ws);
           break;
+        case 'chat_message':
+          _handleChatMessage(state, ws, msg);
+          break;
         // WebRTC signaling pass-through for LAN calls
         case 'call_invite':
         case 'call_accept':
@@ -818,6 +821,14 @@ void _handleLogin(ServerState state, WebSocket ws, Map<String, dynamic> msg, Str
     return;
   }
   
+  // FIX #2: Handle reconnect - replace old socket with new one (NOT duplicate)
+  final oldSocket = state.userSocket[userId];
+  if (oldSocket != null) {
+    print('📋 User $userId reconnecting - replacing old socket...');
+    try { oldSocket.close(); } catch (e) { /* already closed */ }
+    state.clients.remove(oldSocket);
+  }
+  
   final client = state.clients[ws]!;
   client.userId = userId;
   client.displayName = displayName;
@@ -888,6 +899,45 @@ void _handleMessage(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
     }
     // echo back to sender for confirmation/UI
     _send(ws, payload);
+  }
+}
+
+// FIX #4 & #11: Handle chat_message with proper routing to recipient
+void _handleChatMessage(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  
+  final from = fromClient.userId!;
+  final to = (msg['to'] ?? '').toString();
+  final text = (msg['message'] ?? '').toString();
+  final timestamp = (msg['timestamp'] ?? DateTime.now().toIso8601String()).toString();
+  
+  if (to.isEmpty || text.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_chat_message'});
+    return;
+  }
+  
+  final payload = {
+    'type': 'chat_message',
+    'from': from,
+    'to': to,
+    'message': text,
+    'timestamp': timestamp,
+  };
+  
+  // Route to target user - FIX #11: Deliver to recipient
+  final targetSocket = state.userSocket[to];
+  if (targetSocket != null) {
+    targetSocket.add(jsonEncode(payload));
+    _send(ws, {'type': 'chat_message_ack', 'status': 'delivered', 'from': from, 'to': to});
+    print('💬 Chat: $from → $to: "$text"');
+  } else {
+    // User offline - notify sender
+    _send(ws, {'type': 'chat_message_ack', 'status': 'offline', 'from': from, 'to': to, 'error': 'User offline'});
+    print('💤 Chat offline: $from → $to (recipient not online)');
   }
 }
 

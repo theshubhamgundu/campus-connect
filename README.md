@@ -259,6 +259,32 @@ flutter test
 
 ---
 
+## 📑 Development Phases
+
+### Phase 1: Initial Setup ✅
+- Server infrastructure
+- Basic chat functionality
+- Client app structure
+
+### Phase 2: Bug Fixes ✅
+- 190+ compilation errors fixed
+- Dart/Flutter framework compatibility
+
+### Phase 3: Core Fixes ✅
+- 12 critical system bugs fixed
+- WebSocket stability
+- Message routing
+- User filtering
+- Chat delivery
+
+### Phase 4: Persistence & Calls ✅ (CURRENT)
+- Chat history persistence using Hive
+- Call signaling over LAN
+- File sharing protocol
+- See [PHASE_4_IMPLEMENTATION.md](PHASE_4_IMPLEMENTATION.md) for details
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please follow these steps:

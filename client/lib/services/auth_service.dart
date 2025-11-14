@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'package:network_info_plus/network_info_plus.dart';
 import '../models/user.dart';
 
@@ -168,7 +168,7 @@ class AuthService {
   Future<void> _saveUser(User user) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_userKey, user.toJson().toString());
+      await prefs.setString(_userKey, jsonEncode(user.toJson()));
     } catch (e) {
       debugPrint('Error saving user: $e');
     }
