@@ -74,13 +74,22 @@ class _ConnectionStatusState extends State<ConnectionStatus> with SingleTickerPr
   }
 
   Future<bool> _checkServerReachability() async {
-    // Implement actual server reachability check
-    // For now, we'll just check if we have network connectivity
+    if (!mounted) return false;
+    
+    // If we're in development mode, assume local server is reachable
+    if (ServerConfig.isDevelopment) return true;
+
     try {
-      // TODO: Replace with actual server reachability check
-      await Future.delayed(const Duration(seconds: 1));
-      return _isConnected;
+      final client = http.Client();
+      final response = await client
+          .get(Uri.parse('${ServerConfig.baseUrl}/health'))
+          .timeout(const Duration(seconds: 3));
+          
+      return response.statusCode == 200;
     } catch (e) {
+      if (kDebugMode) {
+        print('Server reachability check failed: $e');
+      }
       return false;
     }
   }
@@ -101,6 +110,71 @@ class _ConnectionStatusState extends State<ConnectionStatus> with SingleTickerPr
     return Stack(
       children: [
         widget.child,
+        StreamBuilder<bool>(
+          stream: _connectionStatusService.connectionState,
+          builder: (context, snapshot) {
+            final isConnected = snapshot.data ?? false;
+            _isConnected = isConnected;
+            
+            if (isConnected) {
+              // Show brief connection restored message
+              if (_wasDisconnected) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Connection restored'),
+                      backgroundColor: Colors.green,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                  _wasDisconnected = false;
+                });
+              }
+              return const SizedBox.shrink();
+            }
+            
+            _wasDisconnected = true;
+            return GestureDetector(
+              onTap: () async {
+                // Try to reconnect when tapped
+                if (await _checkServerReachability()) {
+                  await _connectionStatusService.reconnect();
+                } else {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Unable to connect to the server'),
+                        backgroundColor: Colors.orange,
+                      ),
+                    );
+                  }
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                color: Colors.red,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.signal_wifi_off, size: 16, color: Colors.white),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'No connection',
+                      style: TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    if (ServerConfig.isDevelopment) ...[
+                      const SizedBox(width: 8),
+                      const Text(
+                        '(Development Mode)',
+                        style: TextStyle(color: Colors.white70, fontSize: 10),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
         if (!_isConnected || !_isServerReachable) ..._buildDisconnectedOverlay(),
       ],
     );

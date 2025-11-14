@@ -1,0 +1,170 @@
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+*.packages
+pubspec.lock
+build/
+.gradle/
+*.iml
+.android/
+.ios/
+.web/
+.windows/
+.macos/
+.linux/
+
+# Dart/Flutter specific
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+*.apk
+*.jks
+*.p12
+*.pem
+*.key
+*.pub
+.pub-cache/
+.pub/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# OS
+.DS_Store
+Thumbs.db
+.directory
+*.swp
+
+# Build outputs
+dist/
+build/
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Dependencies
+node_modules/
+.dart_tool/
+.pub-cache/
+.pub/
+
+# Generated files
+*.g.dart
+*.config.dart
+*.chopper.dart
+*.freezed.dart
+*.g.json
+
+# Android
+android/local.properties
+android/gradle.properties
+android/.gradle
+android/build/
+*.apk
+*.jks
+
+# iOS
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Pods/
+ios/Podfile.lock
+*.pbxuser
+*.perspectivev3
+*.xcworkspace/xcuserdata/
+
+# Coverage
+coverage/
+.coverage
+lcov.info
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.#*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Documentation (if any)
+docs/build/
+
+# Server specific
+server/.dart_tool/
+server/build/
+server/.pub-cache/
+server/.packages
+server/pubspec.lock
+
+# Client specific
+client/.dart_tool/
+client/build/
+client/.pub-cache/
+client/.packages
+client/pubspec.lock
+client/android/local.properties
+client/android/.gradle
+client/build/app/intermediates/
+
+# Server UI (Node.js)
+server_ui/node_modules/
+server_ui/.env
+server_ui/.env.local
+server_ui/dist/
+server_ui/build/
+server_ui/.next/
+
+# Visual Studio Code
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
+
+# Xcode
+*.xcworkspace
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# Miscellaneous
+.history
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# Windows
+desktop.ini

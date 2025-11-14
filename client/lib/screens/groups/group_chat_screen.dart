@@ -1,12 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:intl/intl.dart';
+import 'package:flutter/services.dart'; // For Clipboard
 import '../../models/group.dart';
 import '../../models/message.dart';
 import '../../services/group_service.dart';
+import '../../providers/auth_provider.dart';
 import '../../widgets/chat/message_bubble.dart';
 import '../../widgets/chat/chat_input.dart';
-import 'group_members_screen.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final Group group;
@@ -26,95 +27,92 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _isLoading = true;
   bool _isSending = false;
   List<Message> _messages = [];
-  StreamSubscription? _messagesSubscription;
-  StreamSubscription? _typingSubscription;
+  StreamSubscription<dynamic>? _messagesSubscription;
+  StreamSubscription<dynamic>? _typingSubscription;
   Map<String, bool> _typingUsers = {};
   bool _showScrollToBottom = false;
   final FocusNode _focusNode = FocusNode();
   final GlobalKey _messageListKey = GlobalKey();
-
+  late GroupService _groupService;
   bool _isConnected = true;
-  StreamSubscription? _connectionSubscription;
 
   @override
   void initState() {
     super.initState();
-    _initConnectionListener();
+    _groupService = Provider.of<GroupService>(context, listen: false);
     _loadMessages();
     _scrollController.addListener(_onScroll);
     _focusNode.addListener(_onFocusChange);
+    _subscribeToMessages();
   }
-
-  void _initConnectionListener() {
-    final webSocketService = Provider.of<WebSocketService>(context, listen: false);
-    _connectionSubscription = webSocketService.connectionState.listen((isConnected) {
+  
+  void _subscribeToMessages() {
+    _messagesSubscription = _groupService.watchMessages(widget.group.id).listen((messages) {
       if (mounted) {
         setState(() {
-          _isConnected = isConnected;
+          _messages = messages;
+          _isLoading = false;
         });
-        
-        if (isConnected) {
-          // Reconnect and reload messages when connection is restored
-          _loadMessages();
-        } else {
-          // Show connection lost message
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Connection lost. Trying to reconnect...'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
+        _scrollToBottom();
       }
     });
+  }
+  
+  void _onCopyMessage(Message message) {
+    Clipboard.setData(ClipboardData(text: message.text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Message copied to clipboard')),
+    );
+  }
+  
+  void _onFocusChange() {
+    if (_focusNode.hasFocus) {
+      _scrollToBottom();
+    }
+  }
+  
+  void _onScroll() {
+    if (_scrollController.position.pixels > 200) {
+      if (!_showScrollToBottom) {
+        setState(() => _showScrollToBottom = true);
+      }
+    } else {
+      if (_showScrollToBottom) {
+        setState(() => _showScrollToBottom = false);
+      }
+    }
+  }
+  
+  void _scrollToBottom({bool animate = true}) {
+    if (_scrollController.hasClients) {
+      if (animate) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      } else {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        });
+      }
+    }
   }
 
   @override
   void dispose() {
-    _scrollController.removeListener(_onScroll);
-    _scrollController.dispose();
-    _messageController.dispose();
     _messagesSubscription?.cancel();
     _typingSubscription?.cancel();
-    _connectionSubscription?.cancel();
-    _focusNode.removeListener(_onFocusChange);
+    _scrollController.dispose();
+    _messageController.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
-  void _onFocusChange() {
-    if (!_focusNode.hasFocus) {
-      // User stopped typing
-      _sendTypingStatus(false);
-    }
-  }
-
-  void _onScroll() {
-    if (_scrollController.hasClients) {
-      final maxScroll = _scrollController.position.maxScrollExtent;
-      final currentScroll = _scrollController.offset;
-      
-      setState(() {
-        _showScrollToBottom = currentScroll < maxScroll - 100;
-      });
-
-      // Load older messages when near the top
-      if (_scrollController.position.pixels < 200) {
-        _loadOlderMessages();
-      }
-    }
-  }
-
   Future<void> _loadMessages() async {
-    final groupService = Provider.of<GroupService>(context, listen: false);
-    
     try {
-      // Load initial batch of messages
-      final messages = await groupService.loadMessages(
-        widget.group.id,
-        limit: 50,
-      );
-      
+      setState(() => _isLoading = true);
+      final messages = await _groupService.getMessages(widget.group.id);
       if (mounted) {
         setState(() {
           _messages = messages;
@@ -122,38 +120,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
         _scrollToBottom(animate: false);
       }
-
-      // Listen for new messages
-      _messagesSubscription = groupService
-          .watchMessages(widget.group.id)
-          .listen((messages) {
-        if (mounted) {
-          setState(() {
-            _messages = messages;
-          });
-          _scrollToBottom();
-        }
-      });
-
-      // Listen for typing indicators
-      _typingSubscription = groupService
-          .watchTypingStatus(widget.group.id)
-          .listen((typingUsers) {
-        if (mounted) {
-          setState(() {
-            _typingUsers = typingUsers;
-          });
-        }
-      });
-
-      // Mark messages as read
-      _markMessagesAsRead();
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-        _showError('Failed to load messages');
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load messages: ${e.toString()}')),
+        );
       }
     }
   }
@@ -161,7 +133,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _loadOlderMessages() async {
     if (_isLoading || _messages.isEmpty) return;
 
-    final groupService = Provider.of<GroupService>(context, listen: false);
     final firstMessage = _messages.first;
     
     try {
@@ -169,10 +140,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _isLoading = true;
       });
 
-      final olderMessages = await groupService.loadMessages(
+      final olderMessages = await _groupService.loadMessages(
         widget.group.id,
         limit: 20,
-        beforeMessageId: firstMessage.id,
+        offset: 0,
       );
 
       if (mounted && olderMessages.isNotEmpty) {
@@ -199,26 +170,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _sendMessage(String text) async {
-    if (text.trim().isEmpty || !_isConnected) return;
+    if (text.trim().isEmpty) return;
 
     setState(() => _isSending = true);
 
     try {
-      if (!_isConnected) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Cannot send message. No connection to server.'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-        return;
-      }
-
-      final groupService = Provider.of<GroupService>(context, listen: false);
-      
-      await groupService.sendMessage(
+      await _groupService.sendMessage(
         groupId: widget.group.id,
         content: text,
         type: MessageType.text,
@@ -275,22 +232,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
-  void _scrollToBottom({bool animate = true}) {
-    if (_scrollController.hasClients) {
-      if (animate) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      } else {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-        });
-      }
-    }
-  }
-
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
@@ -298,16 +239,32 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _markMessagesAsRead() async {
-    final unreadMessages = _messages
-        .where((msg) => !msg.isRead && msg.senderId != currentUserId)
-        .toList();
+    final currentUserId = Provider.of<AuthProvider>(context, listen: false).currentUser?.userId;
+    if (currentUserId == null) return;
+    
+    final unreadMessages = _messages.where((msg) => 
+      msg.status != MessageStatus.read && 
+      msg.senderId != currentUserId
+    ).toList();
 
     if (unreadMessages.isNotEmpty) {
-      final groupService = Provider.of<GroupService>(context, listen: false);
-      await groupService.markAsRead(
-        widget.group.id,
-        unreadMessages.map((msg) => msg.id).toList(),
-      );
+      try {
+        await _groupService.markAsRead(
+          widget.group.id,
+          unreadMessages.map((msg) => msg.id).toList(),
+        );
+        
+        // Update local message status
+        setState(() {
+          for (var msg in _messages) {
+            if (unreadMessages.any((m) => m.id == msg.id)) {
+              msg.status = MessageStatus.read;
+            }
+          }
+        });
+      } catch (e) {
+        debugPrint('Error marking messages as read: $e');
+      }
     }
   }
 
@@ -323,10 +280,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               title: const Text('Copy'),
               onTap: () {
                 Navigator.pop(context);
-                Clipboard.setData(ClipboardData(text: message.content));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Message copied')),
-                );
+                _onCopyMessage(message);
               },
             ),
             if (message.senderId == currentUserId)
@@ -335,7 +289,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 title: const Text('Delete'),
                 onTap: () {
                   Navigator.pop(context);
-                  _deleteMessage(message);
+                  _onDeleteMessage(message);
                 },
               ),
             ListTile(
@@ -352,34 +306,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
-  Future<void> _deleteMessage(Message message) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Message'),
-        content: const Text('Are you sure you want to delete this message?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('CANCEL'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text(
-              'DELETE',
-              style: TextStyle(color: Colors.red),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      try {
-        final groupService = Provider.of<GroupService>(context, listen: false);
-        await groupService.deleteMessage(widget.group.id, message.id);
-      } catch (e) {
-        _showError('Failed to delete message');
+  Future<void> _onDeleteMessage(Message message) async {
+    try {
+      await _groupService.deleteMessage(widget.group.id, message.id);
+      if (mounted) {
+        setState(() {
+          _messages.removeWhere((m) => m.id == message.id);
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete message: $e')),
+        );
       }
     }
   }
@@ -389,8 +328,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   void _sendTypingStatus(bool isTyping) {
-    final groupService = Provider.of<GroupService>(context, listen: false);
-    groupService.sendTypingStatus(widget.group.id, isTyping);
+    _groupService.sendTypingStatus(widget.group.id, isTyping);
   }
 
   String _getTypingText() {
@@ -430,231 +368,85 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        // Clear any error messages when going back
-        if (mounted) {
-          ScaffoldMessenger.of(context).clearSnackBars();
-        }
-        return true;
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(widget.group.name),
-              if (_typingUsers.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Text(
-                  '${_typingUsers.entries.where((e) => e.value).take(2).map((e) => e.key).join(', ')} ${_typingUsers.length > 2 ? '...' : ''} is typing...',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.white70,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              ] else if (!_isConnected) ...[
-                const SizedBox(height: 2),
-                Text(
-                  'Connecting...',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.orange[200],
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              ],
-            ],
-          ),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.people),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => GroupMembersScreen(group: widget.group),
-                  ),
-                );
-              },
-            ),
-            PopupMenuButton<String>(
-              onSelected: (value) {
-                switch (value) {
-                  case 'info':
-                    // TODO: Show group info
-                    break;
-                  case 'media':
-                    // TODO: Show shared media
-                    break;
-                  case 'mute':
-                    // TODO: Mute notifications
-                    break;
-                  case 'exit':
-                    // TODO: Exit group
-                    break;
-                }
-              },
-              itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'info',
-                  child: Text('Group Info'),
-                ),
-                const PopupMenuItem(
-                  value: 'media',
-                  child: Text('Shared Media'),
-                ),
-                const PopupMenuItem(
-                  value: 'mute',
-                  child: Text('Mute Notifications'),
-                ),
-                const PopupMenuItem(
-                  value: 'exit',
-                  child: Text('Exit Group', style: TextStyle(color: Colors.red)),
-                ),
-              ],
-            ),
+    final currentUser = Provider.of<AuthProvider>(context, listen: false).currentUser;
+    
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.group.name),
+            if (_typingUsers.isNotEmpty)
+              Text(
+                _getTypingText(),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
           ],
         ),
-        body: Column(
-          children: [
-            _buildConnectionStatus(),
-            Expanded(
-              child: _isLoading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _messages.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.forum_outlined,
-                                size: 64,
-                                color: Colors.grey[400],
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'No messages yet',
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Send a message to start the conversation',
-                                style: Theme.of(context).textTheme.bodyMedium
-                                    ?.copyWith(color: Colors.grey),
-                              ),
-                            ],
-                          ),
-                        )
-                      : Stack(
-                          children: [
-                            GestureDetector(
-                              onTap: () {
-                                // Dismiss keyboard when tapping on messages
-                                FocusScope.of(context).unfocus();
-                              },
-                              child: ListView.builder(
-                                key: _messageListKey,
-                                controller: _scrollController,
-                                padding: const EdgeInsets.symmetric(vertical: 8),
-                                itemCount: _messages.length,
-                                itemBuilder: (context, index) {
-                                  final message = _messages[index];
-                                  final isMe = message.senderId == currentUserId;
-                                  final showAvatar = index == 0 ||
-                                      _messages[index - 1].senderId !=
-                                          message.senderId;
-                                  final showTime = index == _messages.length - 1 ||
-                                      _messages[index + 1].senderId !=
-                                          message.senderId;
-
-                                  return MessageBubble(
-                                    message: message,
-                                    isMe: isMe,
-                                    showAvatar: showAvatar,
-                                    showTime: showTime,
-                                    onLongPress: () => _showMessageOptions(message),
-                                  );
-                                },
-                              ),
-                            ),
-                            if (_showScrollToBottom)
-                              Positioned(
-                                right: 16,
-                                bottom: 16,
-                                child: FloatingActionButton.small(
-                                  onPressed: _scrollToBottom,
-                                  child: const Icon(Icons.arrow_downward),
-                                ),
-                              ),
-                              'No messages yet',
-                              style: theme.textTheme.titleMedium,
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Send a message to start the conversation',
-                              style: theme.textTheme.bodyMedium
-                                  ?.copyWith(color: Colors.grey),
-                            ),
-                          ],
-                        ),
-                      )
-                    : Stack(
-                        children: [
-                          GestureDetector(
-                            onTap: () {
-                              // Dismiss keyboard when tapping on messages
-                              FocusScope.of(context).unfocus();
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () {
+              // TODO: Show group info
+            },
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (!_isConnected) _buildConnectionStatus(),
+          Expanded(
+            child: Stack(
+              children: [
+                _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _messages.isEmpty
+                        ? const Center(child: Text('No messages yet'))
+                        : ListView.builder(
+                            key: _messageListKey,
+                            controller: _scrollController,
+                            reverse: true,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+                            itemCount: _messages.length,
+                            itemBuilder: (context, index) {
+                              final message = _messages[index];
+                              final isMe = message.senderId == currentUser?.userId;
+                              
+                              return MessageBubble(
+                                message: message,
+                                isMe: isMe,
+                                onCopy: () => _onCopyMessage(message),
+                                onDelete: isMe ? () => _onDeleteMessage(message) : null,
+                              );
                             },
-                            child: ListView.builder(
-                              key: _messageListKey,
-                              controller: _scrollController,
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                              itemCount: _messages.length,
-                              itemBuilder: (context, index) {
-                                final message = _messages[index];
-                                final isMe = message.senderId == currentUserId;
-                                final showAvatar = index == 0 ||
-                                    _messages[index - 1].senderId !=
-                                        message.senderId;
-                                final showTime = index == _messages.length - 1 ||
-                                    _messages[index + 1].senderId !=
-                                        message.senderId;
-
-                                return MessageBubble(
-                                  message: message,
-                                  isMe: isMe,
-                                  showAvatar: showAvatar,
-                                  showTime: showTime,
-                                  onLongPress: () => _showMessageOptions(message),
-                                );
-                              },
-                            ),
                           ),
-                          if (_showScrollToBottom)
-                            Positioned(
-                              right: 16,
-                              bottom: 16,
-                              child: FloatingActionButton.small(
-                                onPressed: _scrollToBottom,
-                                child: const Icon(Icons.arrow_downward),
-                              ),
-                            ),
-                        ],
-                      ),
+                if (_showScrollToBottom)
+                  Positioned(
+                    bottom: 16,
+                    right: 16,
+                    child: FloatingActionButton.small(
+                      onPressed: _scrollToBottom,
+                      child: const Icon(Icons.arrow_downward),
+                    ),
+                  ),
+              ],
+            ),
           ),
           ChatInput(
-            controller: _messageController,
             onSend: _sendMessage,
-            onAttachment: _handleAttachment,
+            onAttachmentPressed: _handleAttachment,
             onTyping: _handleTypingStatus,
             focusNode: _focusNode,
-            isSending: _isSending,
+            controller: _messageController,
           ),
         ],
       ),
     );
   }
-}
 
-// TODO: Replace with actual current user ID
-String get currentUserId => 'current-user-id';
+  String get currentUserId {
+    // Get the current user ID from auth provider
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    return authProvider.currentUser?.id ?? 'anonymous';
+  }
+}

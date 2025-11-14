@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,7 +17,7 @@ import 'identity_service.dart';
 typedef MessageCallback = void Function(dynamic data);
 typedef FileProgressCallback = void Function(int sent, int total);
 
-class WebSocketService {
+class WebSocketService extends ChangeNotifier {
   static final WebSocketService _instance = WebSocketService._internal();
   factory WebSocketService() => _instance;
 
@@ -54,6 +55,8 @@ class WebSocketService {
   Stream<bool> get connectionState => _connectionStateController.stream;
   bool get isConnected => _isConnected;
   bool get isConnecting => _isConnecting;
+  String? get userId => _userId;
+  WebSocketChannel? get channel => _channel;
 
   // Initialize and attempt connection when on CampusNet Wi‑Fi
   Future<void> initialize() async {
@@ -69,17 +72,6 @@ class WebSocketService {
           _userId = 'ip:$wifiIP';
           await prefs.setString('userId', _userId!);
         }
-
-  // Send a raw server message with top-level 'type' (e.g., type: 'message')
-  Future<void> sendType(String type, Map<String, dynamic> fields) async {
-    final map = {'type': type, ...fields};
-    if (!_isConnected) {
-      _enqueue(type, map, waitForResponse: false);
-      _scheduleReconnect();
-      return;
-    }
-    _channel!.sink.add(jsonEncode(map));
-  }
       } catch (_) {}
     }
     _setupNetworkListeners();
@@ -100,6 +92,7 @@ class WebSocketService {
     _isConnected = false;
     _isConnecting = false;
     _connectionStateController.add(false);
+    notifyListeners();
     _notifyConnectionStatus(false, message: 'Disconnected from CampusNet');
   }
 
@@ -116,44 +109,50 @@ class WebSocketService {
 
   Future<void> _checkNetworkAndConnect() async {
     try {
-      final connectivity = await Connectivity().checkConnectivity();
-      if (connectivity != ConnectivityResult.wifi) {
-        _notifyConnectionStatus(false, message: 'Please connect to CampusNet Wi‑Fi');
-        return;
-      }
+      // For local development, skip network checks if explicitly in debug mode
+      bool isLocalDevelopment = false;
+      assert(() {
+        isLocalDevelopment = true;
+        return true;
+      }());
 
-      // Ensure we are on a private LAN (e.g., 192.168.137.x hotspot)
-      final networkInfo = NetworkInfo();
-      final wifiIP = await networkInfo.getWifiIP();
-      if (wifiIP == null ||
-          !(wifiIP.startsWith('192.168.') || wifiIP.startsWith('10.') || wifiIP.startsWith('172.'))) {
-        _notifyConnectionStatus(false, message: 'Please connect to CampusNet Wi‑Fi');
-        return;
+      if (!isLocalDevelopment) {
+        final connectivity = await Connectivity().checkConnectivity();
+        if (connectivity == ConnectivityResult.none) {
+          _notifyConnectionStatus(false, message: 'No network connection');
+          return;
+        }
       }
 
       if (!_isConnected && !_isConnecting) {
         await _openChannel();
       }
-    } catch (e, st) {
-      _logger.e('Network check failed', error: e, stackTrace: st);
+    } catch (e) {
+      _logger.e('Network check failed', error: e);
       _notifyConnectionStatus(false, message: 'Network error. Retrying...');
       _scheduleReconnect();
     }
   }
 
   Future<void> _openChannel() async {
+    if (_isConnecting) return;
     _isConnecting = true;
-    final url = Uri.parse('${ServerConfig.webSocketUrl}?userId=${Uri.encodeQueryComponent(_userId ?? '')}&device=flutter&v=1');
-    _logger.i('Connecting to $url');
+    
     try {
+      // Ensure we have a valid user ID for the connection
+      final userId = _userId ?? 'offline-user';
+      final wsUrl = ServerConfig.webSocketUrl;
+      final url = Uri.parse('$wsUrl?userId=${Uri.encodeQueryComponent(userId)}&device=flutter&v=1');
+      _logger.i('Connecting to $url');
+      
       // Close any existing channel
       await _subscription?.cancel();
       await _channel?.sink.close(status.goingAway);
 
-      final channel = WebSocketChannel.connect(url);
-      try { await channel.ready; } catch (_) {}
-
-      _channel = channel;
+      _channel = WebSocketChannel.connect(url);
+      
+      // Set up the subscription
+      _subscription?.cancel(); // Cancel any existing subscription
       _subscription = _channel!.stream.listen(
         _onMessage,
         onError: _onError,
@@ -165,6 +164,7 @@ class WebSocketService {
       _isConnecting = false;
       _reconnectAttempts = 0;
       _connectionStateController.add(true);
+      notifyListeners();
       _notifyConnectionStatus(true, message: 'Connected to CampusNet');
       _startHeartbeat();
       _drainQueue();
@@ -187,6 +187,27 @@ class WebSocketService {
       _logger.e('WebSocket connect failed', error: e, stackTrace: st);
       _scheduleReconnect();
     }
+  }
+
+  void _scheduleReconnect() {
+    if (_isConnected || _isConnecting) return;
+    if (_userId == null) {
+      _logger.w('Not reconnecting: No user ID available');
+      return;
+    }
+    
+    if (_reconnectAttempts >= ServerConfig.maxReconnectAttempts) {
+      _logger.w('Max reconnection attempts reached');
+      _notifyConnectionStatus(false, message: 'Connection lost. Please check your network.');
+      return;
+    }
+    
+    _reconnectTimer?.cancel();
+    _reconnectAttempts++;
+    final delay = Duration(seconds: min(30, (1 << _reconnectAttempts))) + Duration(milliseconds: Random().nextInt(500));
+    _logger.i('Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts)');
+    _notifyConnectionStatus(false, message: 'Reconnecting in ${delay.inSeconds}s...');
+    _reconnectTimer = Timer(delay, _checkNetworkAndConnect);
   }
 
   void _onMessage(dynamic message) {
@@ -250,29 +271,15 @@ class WebSocketService {
     _isConnecting = false;
     _heartbeatTimer?.cancel();
     _connectionStateController.add(false);
-    _notifyConnectionStatus(false, message: 'Reconnecting to CampusNet...');
-    _scheduleReconnect();
-  }
-
-  void _scheduleReconnect() {
-    if (_isConnected || _isConnecting) return;
-    if (_reconnectAttempts >= ServerConfig.maxReconnectAttempts) {
-      _logger.w('Max reconnection attempts reached');
-      return;
+    notifyListeners();
+    
+    // Only show reconnection message if we have a user ID
+    if (_userId != null) {
+      _notifyConnectionStatus(false, message: 'Reconnecting to server...');
+      _scheduleReconnect();
+    } else {
+      _logger.w('Not reconnecting: No user ID available');
     }
-    _reconnectTimer?.cancel();
-    _reconnectAttempts++;
-    final delay = Duration(seconds: min(30, (1 << _reconnectAttempts))) + Duration(milliseconds: Random().nextInt(500));
-    _logger.i('Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts)');
-    _reconnectTimer = Timer(delay, _checkNetworkAndConnect);
-  }
-
-  // Public manual reconnect trigger for UI Retry
-  Future<void> reconnect() async {
-    if (_isConnecting) return;
-    _reconnectTimer?.cancel();
-    _reconnectAttempts = 0;
-    await _checkNetworkAndConnect();
   }
 
   void _startHeartbeat() {
@@ -357,12 +364,12 @@ class WebSocketService {
     }
   }
 
-  // Listener helpers
-  void addListener(String event, MessageCallback callback) {
+  // Listener helpers - event-based listeners (not ChangeNotifier listeners)
+  void on(String event, MessageCallback callback) {
     _listeners.putIfAbsent(event, () => []).add(callback);
   }
 
-  void removeListener(String event, MessageCallback callback) {
+  void off(String event, MessageCallback callback) {
     _listeners[event]?.remove(callback);
     if (_listeners[event]?.isEmpty == true) _listeners.remove(event);
   }
@@ -459,6 +466,27 @@ class WebSocketService {
       }
     } catch (e, st) {
       _logger.e('Failed to finalize file', error: e, stackTrace: st);
+    }
+  }
+
+  // Send a raw server message with top-level 'type' (e.g., {type: 'message', ...})
+  Future<void> sendType(String type, Map<String, dynamic> fields) async {
+    final map = {'type': type, ...fields};
+    if (!_isConnected) {
+      _enqueue(type, map, waitForResponse: false);
+      _scheduleReconnect();
+      return;
+    }
+    _channel!.sink.add(jsonEncode(map));
+  }
+
+  // Clean up resources
+  Future<void> dispose() async {
+    try {
+      await disconnect();
+    } finally {
+      await _messageController.close();
+      await _connectionStateController.close();
     }
   }
 }

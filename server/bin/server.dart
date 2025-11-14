@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 /// Enhanced CampusNet Server with Real-Time Device Tracking
 /// Features:
@@ -230,56 +231,86 @@ Future<bool> _enableMobileHotspot() async {
 }
 
 /// Display real-time connected devices (from Windows network)
-Future<List<Map<String, dynamic>>> _getConnectedDevices(ServerState state) async {
-  final devices = <Map<String, dynamic>>[];
-  
-  // Get all connected clients from our server
-  for (final client in state.clients.values) {
-    devices.add({
-      'type': 'connected',
-      'ip': client.clientIp,
-      'userId': client.userId ?? 'Connecting...',
-      'name': client.displayName ?? 'Unknown Device',
-      'role': client.role ?? 'N/A',
-      'status': client.userId != null ? 'logged_in' : 'connecting',
-      'connectedAt': client.connectedAt.toIso8601String(),
-      'uptime': '${DateTime.now().difference(client.connectedAt).inSeconds}s',
-    });
+Future<List<Map<String, dynamic>>> _getConnectedDevices([ServerState? state]) async {
+  // Strict ARP-only scanner targeted to Windows Mobile Hotspot (192.168.137.x)
+  // Steps:
+  // 1) Refresh ARP cache (try to delete and ping hotspot gateway)
+  // 2) Read `arp -a` output
+  // 3) Parse and filter only valid hotspot client IPs
+
+  Future<void> _refreshArpCache() async {
+    try {
+      // Delete ARP cache entries (best-effort, may require admin)
+      await Process.run('arp', ['-d'], runInShell: true);
+    } catch (_) {
+      // ignore
+    }
+    try {
+      // Ping the hotspot gateway to force ARP population
+      await Process.run('ping', ['-n', '1', '192.168.137.1'], runInShell: true);
+    } catch (_) {
+      // ignore
+    }
+    // small delay to let ARP table update
+    await Future.delayed(const Duration(milliseconds: 300));
   }
-  
-  // Try to get ARP table info (Windows cmd)
+
+  final results = <Map<String, dynamic>>[];
+
+  // Refresh ARP entries first
+  await _refreshArpCache();
+
   try {
-    final result = await Process.run('arp', ['-a'], runInShell: true);
-    final lines = result.stdout.toString().split('\n');
-    
-    // Parse ARP table for dynamic entries (recently active devices)
+    final arp = await Process.run('arp', ['-a'], runInShell: true);
+    final out = arp.stdout.toString();
+    final lines = out.split(RegExp(r'\r?\n'));
+
+    // Regex: IP, whitespace, MAC, whitespace, type
+    final arpRe = RegExp(r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F:-]{11,17})\s+(\w+)");
+
     for (final line in lines) {
-      if (line.contains('dynamic') && line.contains('192.168.137')) {
-        final parts = line.trim().split(RegExp(r'\s+'));
-        if (parts.length >= 2) {
-          final ip = parts[0];
-          // Check if this IP is already in our connected list
-          final alreadyConnected = devices.any((d) => d['ip'] == ip);
-          if (!alreadyConnected) {
-            devices.add({
-              'type': 'detected',
-              'ip': ip,
-              'userId': 'Not connected',
-              'name': 'Nearby Device',
-              'role': 'N/A',
-              'status': 'nearby',
-              'detectedAt': DateTime.now().toIso8601String(),
-              'info': 'Detected on network, not connected to CampusNet',
-            });
-          }
-        }
-      }
+      final m = arpRe.firstMatch(line);
+      if (m == null) continue;
+      final ip = m.group(1)!.trim();
+      var mac = m.group(2)!.trim().toLowerCase();
+      final type = m.group(3)!.trim().toLowerCase();
+
+      // Normalize MAC to hyphen-separated lower-case (xx-xx-...)
+      mac = mac.replaceAll(':', '-').replaceAll('.', '-');
+      mac = mac.split('-').map((p) => p.padLeft(2, '0')).join('-');
+
+      // Filtering rules (only accept real hotspot clients)
+      // - IP must be in 192.168.137.2..192.168.137.254
+      // - Exclude 192.168.137.1 (gateway) and 192.168.137.255
+      // - Exclude multicast (224.*, 239.*), broadcast 255.255.255.255, and 10.* addresses
+
+      if (!ip.startsWith('192.168.137.')) continue;
+      if (ip == '192.168.137.1') continue;
+      if (ip == '192.168.137.255') continue;
+      if (ip == '255.255.255.255') continue;
+      if (ip.startsWith('224.') || ip.startsWith('239.')) continue;
+      if (ip.startsWith('10.')) continue;
+
+      // Validate last octet range 2..254
+      final parts = ip.split('.');
+      if (parts.length != 4) continue;
+      final last = int.tryParse(parts[3]) ?? -1;
+      if (last < 2 || last > 254) continue;
+
+      // Only include entries that are not incomplete (type may be "dynamic" or "static")
+      if (type.isEmpty) continue;
+
+      results.add({
+        'ip': ip,
+        'mac': mac,
+        'status': 'reachable',
+      });
     }
   } catch (e) {
-    // Silently ignore if ARP fails
+    // If arp fails, return empty list
   }
-  
-  return devices;
+
+  return results;
 }
 
 /// Display device dashboard in console
@@ -322,13 +353,113 @@ Future<void> _printDeviceDashboard(ServerState state) async {
   print('');
 }
 
-/// Periodic device monitoring (updates every 30 seconds)
-void _startDeviceMonitor(ServerState state) {
-  Timer.periodic(const Duration(seconds: 30), (_) async {
-    if (state.clients.isNotEmpty) {
-      await _printDeviceDashboard(state);
+/// Perform a lightweight ping sweep on the hotspot subnet to populate ARP
+Future<void> _populateArpFromPing(ServerState state) async {
+  try {
+    final interfaces = await NetworkInterface.list();
+    String? hotspotIp;
+    for (final iface in interfaces) {
+      for (final addr in iface.addresses) {
+        if (addr.type == InternetAddressType.IPv4 &&
+            !addr.address.startsWith('127.') &&
+            (iface.name.toLowerCase().contains('wlan') ||
+                iface.name.toLowerCase().contains('wifi') ||
+                iface.name.toLowerCase().contains('hotspot') ||
+                iface.name.toLowerCase().contains('host'))) {
+          hotspotIp = addr.address;
+          break;
+        }
+      }
+      if (hotspotIp != null) break;
     }
+
+    if (hotspotIp == null) return;
+
+    final parts = hotspotIp.split('.');
+    if (parts.length < 4) return;
+    final prefix = '${parts[0]}.${parts[1]}.${parts[2]}.';
+
+    // Ping a limited range to populate ARP table (1..30)
+    final futures = <Future>[];
+    for (var i = 2; i <= 30; i++) {
+      final ip = '$prefix$i';
+      futures.add(Process.run('ping', ['-n', '1', '-w', '150', ip], runInShell: true));
+    }
+    // Await but don't fail hard on errors
+    try {
+      await Future.wait(futures);
+    } catch (_) {}
+  } catch (_) {
+    // ignore
+  }
+}
+
+/// Periodic device monitoring (updates every 15 seconds)
+void _startDeviceMonitor(ServerState state) {
+  // Run initial scan without blocking the main isolate
+  _spawnArpScanAndPrint(state);
+
+  // Periodic scan - run in a spawned isolate to avoid blocking WebSocket handling
+  Timer.periodic(const Duration(seconds: 15), (_) {
+    _spawnArpScanAndPrint(state);
   });
+}
+
+/// Spawn an Isolate to run the ARP scan and send devices back to the main isolate
+void _spawnArpScanAndPrint(ServerState state) async {
+  final receive = ReceivePort();
+  try {
+    await Isolate.spawn(_arpScanIsolateEntry, receive.sendPort);
+    final msg = await receive.first;
+    if (msg is List) {
+      final devices = List<Map<String, dynamic>>.from(msg.cast<Map>());
+      await _printDeviceDashboardWithDevices(state, devices);
+    }
+  } catch (e) {
+    // Fallback to running on main isolate (safer than crashing)
+    await _populateArpFromPing(state);
+    await _printDeviceDashboard(state);
+  } finally {
+    receive.close();
+  }
+}
+
+/// Entry point for isolate: performs ARP scan and returns the device list
+void _arpScanIsolateEntry(SendPort sendPort) async {
+  try {
+    final devices = await _getConnectedDevices(null);
+    sendPort.send(devices);
+  } catch (e) {
+    sendPort.send(<Map<String, dynamic>>[]);
+  }
+}
+
+/// Print dashboard given devices (used when devices are already computed)
+Future<void> _printDeviceDashboardWithDevices(ServerState state, List<Map<String, dynamic>> devices) async {
+  print('');
+  print('╔═══════════════════════════════════════════════════════════╗');
+  print('║  📊 CONNECTED DEVICES DASHBOARD                          ║');
+  print('╚═══════════════════════════════════════════════════════════╝');
+  if (devices.isEmpty) {
+    print('  No devices connected yet');
+  } else {
+    print('  Total Devices: ${devices.length} | Logged In: ${state.totalLoggedInUsers}');
+    print('');
+    print('  ┌────────────────────────────────────────────────────────┐');
+    for (var i = 0; i < devices.length; i++) {
+      final device = devices[i];
+      final icon = device['type'] == 'connected' ? '🔗' : '📡';
+      final status = device['status'] ?? 'unknown';
+      final statusIcon = status == 'logged_in' ? '✓' : status == 'connecting' ? '⏳' : '?';
+      print('  │ $icon [$statusIcon] ${device['ip']}');
+      print('  │    MAC: ${device['mac']}');
+      if (i < devices.length - 1) {
+        print('  │');
+      }
+    }
+    print('  └────────────────────────────────────────────────────────┘');
+  }
+  print('');
 }
 
 /// UDP Discovery Listener
@@ -340,24 +471,41 @@ Future<void> _startUdpDiscoveryListener(int wsPort) async {
     print('✓ UDP discovery listener started on port 8082');
     
     // Get server's local IP address once at startup
-    String serverIp = '192.168.137.167'; // fallback
+    String serverIp = '192.168.137.1'; // sensible default for Windows hotspot
     try {
       final interfaces = await NetworkInterface.list();
+      // Prefer any IPv4 address in the hotspot range 192.168.137.*
+      String? preferred;
       for (final interface in interfaces) {
         for (final addr in interface.addresses) {
-          // Prefer IPv4 on local network (excluding loopback)
-          if (addr.type == InternetAddressType.IPv4 && 
-              !addr.address.startsWith('127.')) {
-            serverIp = addr.address;
-            // Check if this looks like a hotspot interface
-            if (interface.name.toLowerCase().contains('wlan') || 
-                interface.name.toLowerCase().contains('wifi') ||
-                interface.name.toLowerCase().contains('hotspot')) {
-              print('  WiFi/Hotspot Interface: ${interface.name} → $serverIp');
+          if (addr.type != InternetAddressType.IPv4) continue;
+          final a = addr.address;
+          if (a.startsWith('192.168.137.')) {
+            // Prefer .1 if present (typical hotspot gateway)
+            if (a.endsWith('.1')) {
+              preferred = a;
+              break;
             }
-            break;
+            preferred ??= a;
           }
         }
+        if (preferred != null && preferred.endsWith('.1')) break;
+      }
+      if (preferred != null) {
+        serverIp = preferred;
+        print('  Hotspot IP detected: $serverIp');
+      } else {
+        // Fallback: choose first non-loopback IPv4
+        for (final interface in interfaces) {
+          for (final addr in interface.addresses) {
+            if (addr.type == InternetAddressType.IPv4 && !addr.address.startsWith('127.')) {
+              serverIp = addr.address;
+              break;
+            }
+          }
+          if (!serverIp.startsWith('127.')) break;
+        }
+        print('  Using detected IP: $serverIp');
       }
       print('✓ Server will respond with IP: $serverIp');
     } catch (e) {
@@ -564,6 +712,9 @@ void _handleSocket(ServerState state, WebSocket ws, String clientIp) {
           break;
         case 'fileComplete':
           _handleFileComplete(state, ws, msg);
+          break;
+        case 'get_online_users':
+          _handleGetOnlineUsers(state, ws);
           break;
         // WebRTC signaling pass-through for LAN calls
         case 'call_invite':
@@ -835,6 +986,32 @@ void _handleWho(ServerState state, WebSocket ws) {
     'type': 'who',
     'users': onlineUsers,
   });
+}
+
+void _handleGetOnlineUsers(ServerState state, WebSocket ws) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+
+  final onlineUsers = <Map<String, dynamic>>[];
+  for (final client in state.clients.values) {
+    if (client.userId != null) {
+      onlineUsers.add({
+        'userId': client.userId,
+        'name': client.displayName ?? client.userId,
+        'role': client.role ?? 'student',
+        'ip': client.clientIp,
+      });
+    }
+  }
+
+  _send(ws, {
+    'type': 'online_users',
+    'users': onlineUsers,
+  });
+  print('📨 Responded to get_online_users (count: ${onlineUsers.length})');
 }
 
 void _routeTo(ServerState state, String to, Map<String, dynamic> payload) {

@@ -122,9 +122,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
-    // Optimistically append and send via ChatService
+    // Create a unique message ID
+    final messageId = DateTime.now().millisecondsSinceEpoch.toString();
+    
+    // Optimistically add the message to the UI
     final msg = Message(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: messageId,
       senderId: widget.currentUserId,
       receiverId: widget.chat.id,
       text: text,
@@ -132,10 +135,47 @@ class _ChatScreenState extends State<ChatScreen> {
       status: MessageStatus.sending,
       type: MessageType.text,
     );
+    
     setState(() => _messages.add(msg));
-    unawaited(_chatService.sendMessage(receiverId: widget.chat.id, text: text));
     _messageController.clear();
     _scrollToBottom();
+    
+    try {
+      // Try to send the message
+      await _chatService.sendMessage(
+        receiverId: widget.chat.id, 
+        text: text,
+      );
+      
+      // Update message status to sent if successful
+      setState(() {
+        final index = _messages.indexWhere((m) => m.id == messageId);
+        if (index != -1) {
+          _messages[index] = _messages[index].copyWith(status: MessageStatus.sent);
+        }
+      });
+    } catch (e) {
+      // Update message status to failed if sending fails
+      if (mounted) {
+        setState(() {
+          final index = _messages.indexWhere((m) => m.id == messageId);
+          if (index != -1) {
+            _messages[index] = _messages[index].copyWith(status: MessageStatus.error);
+          }
+        });
+        
+        // Show error message to user
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Failed to send message. Please try again.'),
+            action: SnackBarAction(
+              label: 'Retry',
+              onPressed: () => _sendMessage(),
+            ),
+          ),
+        );
+      }
+    }
   }
 
   void _scrollToBottom() {
@@ -579,11 +619,11 @@ class _ChatScreenState extends State<ChatScreen> {
                                                   if (isMe) ...[
                                                     const SizedBox(width: 4),
                                                     Icon(
-                                                      message.isRead 
+                                                      message.status == MessageStatus.read 
                                                           ? Icons.done_all_rounded 
                                                           : Icons.done_rounded,
                                                       size: 14,
-                                                      color: message.isRead 
+                                                      color: message.status == MessageStatus.read 
                                                           ? Colors.blue 
                                                           : Colors.grey[600],
                                                     ),
@@ -611,7 +651,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildFileMessage(Message message) {
     final fileName = message.text.split('/').last;
-    final fileSize = message.fileSize ?? 0;
+    final fileSize = message.fileInfo?.size ?? 0;
     final fileExtension = fileName.split('.').last.toLowerCase();
     
     IconData fileIcon;

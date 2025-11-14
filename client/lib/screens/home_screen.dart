@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:provider/provider.dart';
 import '../services/websocket_service.dart';
+import '../services/connection_service.dart';
+import '../providers/auth_provider.dart';
 import 'chats_screen.dart';
-import 'groups_screen.dart';
+import 'groups/groups_screen.dart';
 import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -18,7 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoading = true;
   bool _lastConnected = false;
   DateTime _lastToastAt = DateTime.fromMillisecondsSinceEpoch(0);
-  StreamSubscription<bool>? _connSub;
+  VoidCallback? _connListener;
   
   final List<Widget> _screens = [
     const ChatsScreen(),
@@ -30,34 +35,58 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initializeApp();
-    // Subscribe to connection changes for throttled SnackBars
-    final ws = WebSocketService();
-    _lastConnected = ws.isConnected;
-    _connSub = ws.connectionState.listen((connected) {
+    // Subscribe to connection changes for throttled SnackBars via ConnectionService
+    final conn = ConnectionService.instance;
+    _lastConnected = conn.connectionStatus.value == ConnectionStatus.connected;
+    _connListener = () {
+      final connected = conn.connectionStatus.value == ConnectionStatus.connected;
       final now = DateTime.now();
       final elapsed = now.difference(_lastToastAt).inSeconds;
       if (connected != _lastConnected && elapsed >= 8) {
         _lastToastAt = now;
         _lastConnected = connected;
         if (!mounted) return;
-        final text = connected
-            ? 'Connected to CampusNet'
-            : 'Disconnected — Connect to CampusNet Wi‑Fi';
+        final text = connected ? 'Connected to CampusNet' : 'Disconnected — Connect to CampusNet Wi‑Fi';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(text), duration: const Duration(seconds: 2)),
         );
       } else {
         _lastConnected = connected;
       }
-    });
+    };
+    conn.connectionStatus.addListener(_connListener!);
+  }
+
+  @override
+  void dispose() {
+    if (_connListener != null) ConnectionService.instance.connectionStatus.removeListener(_connListener!);
+    super.dispose();
   }
 
   Future<void> _initializeApp() async {
-    // Add any initialization logic here
-    await Future.delayed(const Duration(milliseconds: 500));
-    if (mounted) {
-      setState(() => _isLoading = false);
-    }
+    // On app start, initialize ConnectionService using saved user info (if any).
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userJson = prefs.getString('current_user');
+      if (userJson != null) {
+        final userMap = jsonDecode(userJson) as Map<String, dynamic>;
+        final userId = userMap['userId']?.toString() ?? '';
+        final name = userMap['name']?.toString() ?? userId;
+        final role = userMap['role']?.toString() ?? 'student';
+        // Start connection in background; don't block the UI
+        Future(() async {
+          try {
+            await ConnectionService.instance.init(userId: userId, name: name, role: role);
+          } catch (e) {
+            // Log and continue; UI will show disconnected banner
+            debugPrint('ConnectionService.init failed on startup: $e');
+          }
+        });
+      }
+    } catch (_) {}
+
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted) setState(() => _isLoading = false);
   }
 
   void _onTabTapped(int index) {
@@ -107,11 +136,10 @@ class _HomeScreenState extends State<HomeScreen> {
           : Column(
               children: [
                 // Connection banner
-                StreamBuilder<bool>(
-                  stream: ws.connectionState,
-                  initialData: ws.isConnected,
-                  builder: (context, snapshot) {
-                    final connected = snapshot.data ?? false;
+                ValueListenableBuilder<ConnectionStatus>(
+                  valueListenable: ConnectionService.instance.connectionStatus,
+                  builder: (context, status, _) {
+                    final connected = status == ConnectionStatus.connected;
                     if (connected) return const SizedBox(height: 0);
                     return Container(
                       width: double.infinity,
@@ -128,7 +156,13 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                           TextButton(
-                            onPressed: ws.isConnecting ? null : ws.reconnect,
+                            onPressed: () {
+                              final authProvider = Provider.of<AuthProvider>(context, listen: false);
+                              if (authProvider.currentUser?.userId != null) {
+                                // Attempt reconnect (use last known server IP or default)
+                                ConnectionService.instance.connectTo('192.168.137.1');
+                              }
+                            },
                             child: const Text(
                               'Retry',
                               style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),

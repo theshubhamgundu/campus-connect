@@ -8,6 +8,7 @@ class Group {
   final String? description;
   final String? imageUrl;
   final List<String> memberIds;
+  final List<User> members;
   final Map<String, dynamic>? metadata;
   final DateTime createdAt;
   final String createdBy;
@@ -22,6 +23,7 @@ class Group {
     this.description,
     this.imageUrl,
     required this.memberIds,
+    List<User>? members,
     this.metadata,
     DateTime? createdAt,
     required this.createdBy,
@@ -29,19 +31,23 @@ class Group {
     this.lastMessage,
     this.unreadCount = 0,
     this.isPrivate = false,
-  }) : createdAt = createdAt ?? DateTime.now();
+  }) : members = members ?? [],
+       createdAt = createdAt ?? DateTime.now();
 
   factory Group.fromJson(Map<String, dynamic> json) {
     return Group(
-      id: json['id'],
-      name: json['name'],
-      description: json['description'],
-      imageUrl: json['imageUrl'],
-      memberIds: List<String>.from(json['memberIds'] ?? []),
-      metadata: json['metadata'],
-      createdAt: json['createdAt'] != null ? DateTime.parse(json['createdAt']) : null,
-      createdBy: json['createdBy'],
-      updatedAt: json['updatedAt'] != null ? DateTime.parse(json['updatedAt']) : null,
+      id: json['id'] as String,
+      name: json['name'] as String,
+      description: json['description'] as String?,
+      imageUrl: json['imageUrl'] as String?,
+      memberIds: List<String>.from((json['memberIds'] as List<dynamic>?)?.map((e) => e.toString()) ?? []),
+      members: (json['members'] as List<dynamic>?)
+          ?.map((member) => User.fromJson(member as Map<String, dynamic>))
+          .toList() ?? [],
+      metadata: json['metadata'] as Map<String, dynamic>?,
+      createdAt: json['createdAt'] != null ? DateTime.tryParse(json['createdAt'] as String) : null,
+      createdBy: json['createdBy'] as String? ?? '',
+      updatedAt: json['updatedAt'] != null ? DateTime.tryParse(json['updatedAt'] as String) : null,
       lastMessage: json['lastMessage'] != null ? Message.fromJson(json['lastMessage']) : null,
       unreadCount: json['unreadCount'] ?? 0,
       isPrivate: json['isPrivate'] ?? false,

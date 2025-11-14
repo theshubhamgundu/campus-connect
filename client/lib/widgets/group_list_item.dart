@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/group.dart';
+import '../models/message.dart';
 
 class GroupListItem extends StatelessWidget {
   final Group group;
@@ -32,111 +33,113 @@ class GroupListItem extends StatelessWidget {
             color: isDark ? Colors.grey[800]! : Colors.grey[200]!,
           ),
         ),
-      child: InkWell(
-        onTap: isConnected ? onTap : null,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Row(
-            children: [
-              // Group Avatar
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: _getAvatarColor(group.id),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Center(
-                  child: Text(
-                    group.name.substring(0, 1).toUpperCase(),
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
+        child: InkWell(
+          onTap: isConnected ? onTap : null,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Row(
+              children: [
+                // Group Avatar
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: _getAvatarColor(group.id),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Center(
+                    child: Text(
+                      group.name.substring(0, 1).toUpperCase(),
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 16),
-              
-              // Group Info
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            group.name,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (group.lastMessage != null)
-                          Text(
-                            _formatTime(group.lastMessage!.timestamp),
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: Colors.grey,
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    if (group.lastMessage != null)
+                const SizedBox(width: 16),
+                
+                // Group Info
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Row(
                         children: [
                           Expanded(
                             child: Text(
-                              _getLastMessagePreview(group.lastMessage!),
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: Colors.grey[600],
+                              group.name,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          if (group.hasUnread && showUnreadCount)
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: theme.primaryColor,
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                group.unreadCount > 99
-                                    ? '99+'
-                                    : group.unreadCount.toString(),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                          if (group.lastMessage != null)
+                            Text(
+                              _formatTime(group.lastMessage!.timestamp),
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: Colors.grey,
                               ),
                             ),
                         ],
-                      )
-                    else
-                      Text(
-                        '${group.memberIds.length} members',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: Colors.grey,
-                        ),
                       ),
-                  ],
+                      const SizedBox(height: 4),
+                      if (group.lastMessage != null)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _getLastMessagePreview(group.lastMessage!),
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: Colors.grey[600],
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (group.hasUnread && showUnreadCount)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: theme.primaryColor,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  group.unreadCount > 99
+                                      ? '99+'
+                                      : group.unreadCount.toString(),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        )
+                      else
+                        Text(
+                          '${group.memberIds.length} members',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: Colors.grey,
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
+    );
   }
 
   String _getLastMessagePreview(Message message) {

@@ -1,10 +1,24 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 class ServerConfig {
-  // Default configuration
-  static const String _defaultIp = '192.168.137.167';
+  // Default configuration - using localhost for development
+  static const String _defaultIp = '127.0.0.1';
   static const int _defaultPort = 8083;
   static const bool _defaultUseHttps = false;
+  
+  // Development mode detection - always true in debug mode
+  static bool get isDevelopment => kDebugMode;
+  
+  // Development mode detection (kept for backward compatibility)
+  static bool get isDevelopmentDebug {
+    bool isDev = false;
+    assert(() {
+      isDev = true;
+      return true;
+    }());
+    return kDebugMode || isDev;
+  }
   
   // Keys for SharedPreferences
   static const String _ipKey = 'server_ip';
@@ -70,20 +84,29 @@ class ServerConfig {
 
   // Get the base URL for API requests
   static String get baseUrl {
-    if (!_isInitialized) {
-      initialize(); // Fire and forget
-      return 'http${_defaultUseHttps ? 's' : ''}://$_defaultIp:$_defaultPort';
+    final protocol = _useHttps ? 'https' : 'http';
+    // For local development, use the configured IP
+    if (isDevelopment) {
+      return '$protocol://$_serverIp:$_serverPort';
     }
-    return 'http${_useHttps ? 's' : ''}://$_serverIp:$_serverPort';
+    // For production, use the domain
+    return '$protocol://api.campusnet.com';
   }
 
   // WebSocket URL for real-time communication
   static String get webSocketUrl {
-    if (!_isInitialized) {
-      initialize(); // Fire and forget
-      return 'ws${_defaultUseHttps ? 's' : ''}://$_defaultIp:$_defaultPort/ws';
+    final protocol = _useHttps ? 'wss' : 'ws';
+    // For local development, use the configured IP
+    if (isDevelopment) {
+      // For local development, try both IP and localhost
+      final urls = [
+        '$protocol://$_serverIp:$_serverPort/ws',
+        if (_serverIp != '127.0.0.1') '$protocol://127.0.0.1:$_serverPort/ws',
+      ];
+      return urls.first;
     }
-    return 'ws${_useHttps ? 's' : ''}://$_serverIp:$_serverPort/ws';
+    // For production, use the domain
+    return '$protocol://api.campusnet.com/ws';
   }
 
   // Check if the current server is a local server

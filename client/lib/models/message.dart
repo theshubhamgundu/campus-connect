@@ -1,7 +1,7 @@
-import 'package:meta/meta.dart';
+import 'dart:io';
 
 enum MessageType { text, image, video, audio, file, location, contact }
-enum MessageStatus { sending, sent, delivered, read, failed }
+enum MessageStatus { sending, sent, delivered, read, failed, error }
 
 class Message {
   final String id;
@@ -14,6 +14,11 @@ class Message {
   final String? replyToMessageId;
   final FileInfo? fileInfo;
   final Map<String, dynamic>? metadata;
+  final String? senderName;
+  final String? senderAvatarUrl;
+
+  // Alias for text property used in some parts of the code
+  String get content => text;
 
   Message({
     required this.id,
@@ -26,6 +31,8 @@ class Message {
     this.replyToMessageId,
     this.fileInfo,
     this.metadata,
+    this.senderName,
+    this.senderAvatarUrl,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) => Message(
@@ -47,20 +54,56 @@ class Message {
             ? FileInfo.fromJson(json['fileInfo']) 
             : null,
         metadata: json['metadata'] as Map<String, dynamic>?,
+        senderName: json['senderName'] as String?,
+        senderAvatarUrl: json['senderAvatarUrl'] as String?,
       );
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'senderId': senderId,
-        'receiverId': receiverId,
-        'text': text,
-        'timestamp': timestamp.toIso8601String(),
-        'status': status.toString().split('.').last,
-        'type': type.toString().split('.').last,
-        if (replyToMessageId != null) 'replyToMessageId': replyToMessageId,
-        if (fileInfo != null) 'fileInfo': fileInfo!.toJson(),
-        if (metadata != null) 'metadata': metadata,
-      };
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'senderId': senderId,
+      'receiverId': receiverId,
+      'text': text,
+      'timestamp': timestamp.toIso8601String(),
+      'status': status.toString().split('.').last,
+      'type': type.toString().split('.').last,
+      'replyToMessageId': replyToMessageId,
+      'fileInfo': fileInfo?.toJson(),
+      'metadata': metadata,
+      'senderName': senderName,
+      'senderAvatarUrl': senderAvatarUrl,
+    };
+  }
+
+  Message copyWith({
+    String? id,
+    String? senderId,
+    String? receiverId,
+    String? text,
+    DateTime? timestamp,
+    MessageStatus? status,
+    MessageType? type,
+    String? replyToMessageId,
+    FileInfo? fileInfo,
+    Map<String, dynamic>? metadata,
+    String? senderName,
+    String? senderAvatarUrl,
+  }) {
+    return Message(
+      id: id ?? this.id,
+      senderId: senderId ?? this.senderId,
+      receiverId: receiverId ?? this.receiverId,
+      text: text ?? this.text,
+      timestamp: timestamp ?? this.timestamp,
+      status: status ?? this.status,
+      type: type ?? this.type,
+      replyToMessageId: replyToMessageId ?? this.replyToMessageId,
+      fileInfo: fileInfo ?? this.fileInfo,
+      metadata: metadata ?? this.metadata,
+      senderName: senderName ?? this.senderName,
+      senderAvatarUrl: senderAvatarUrl ?? this.senderAvatarUrl,
+    );
+  }
 }
 
 class FileInfo {

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../login_screen.dart';
+import '../login_screen_fixed.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({Key? key}) : super(key: key);
@@ -45,7 +45,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
+        MaterialPageRoute(builder: (context) => const LoginScreenFixed()),
       );
     } catch (e) {
       debugPrint('Error completing onboarding: $e');

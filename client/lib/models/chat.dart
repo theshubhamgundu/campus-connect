@@ -1,3 +1,5 @@
+import 'message.dart';
+
 class Chat {
   final String id;
   String name;
@@ -34,6 +36,11 @@ class Chat {
     this.createdBy,
     this.createdAt,
   });
+
+  // Aliases for compatibility
+  String get title => name;
+  String get lastMessageText => lastMessage;
+  DateTime? get lastMessageTimestamp => lastSeen ?? createdAt;
 
   Map<String, dynamic> toMap() {
     return {
@@ -76,74 +83,4 @@ class Chat {
   }
 }
 
-class Message {
-  final String id;
-  final String senderId;
-  final String text;
-  final String type; // 'text', 'image', 'file', 'audio', 'video', 'location'
-  final DateTime timestamp;
-  final bool isRead;
-  final String? filePath;
-  final int? fileSize;
-  final String? fileName;
-  final String? mimeType;
-  final Map<String, dynamic>? metadata;
-  final String? replyToMessageId;
-  final Message? replyToMessage;
-  final Map<String, String>? reactions;
 
-  Message({
-    required this.id,
-    required this.senderId,
-    required this.text,
-    this.type = 'text',
-    DateTime? timestamp,
-    this.isRead = false,
-    this.filePath,
-    this.fileSize,
-    this.fileName,
-    this.mimeType,
-    this.metadata,
-    this.replyToMessageId,
-    this.replyToMessage,
-    this.reactions,
-  }) : timestamp = timestamp ?? DateTime.now();
-
-  bool get isMe => senderId == 'me'; // Replace 'me' with actual current user ID
-
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'senderId': senderId,
-      'text': text,
-      'type': type,
-      'timestamp': timestamp.toIso8601String(),
-      'isRead': isRead,
-      'filePath': filePath,
-      'fileSize': fileSize,
-      'fileName': fileName,
-      'mimeType': mimeType,
-      'metadata': metadata,
-      'replyToMessageId': replyToMessageId,
-      'reactions': reactions,
-    };
-  }
-
-  factory Message.fromMap(Map<String, dynamic> map) {
-    return Message(
-      id: map['id'],
-      senderId: map['senderId'],
-      text: map['text'],
-      type: map['type'] ?? 'text',
-      timestamp: DateTime.parse(map['timestamp']),
-      isRead: map['isRead'] ?? false,
-      filePath: map['filePath'],
-      fileSize: map['fileSize'],
-      fileName: map['fileName'],
-      mimeType: map['mimeType'],
-      metadata: map['metadata'] != null ? Map<String, dynamic>.from(map['metadata']) : null,
-      replyToMessageId: map['replyToMessageId'],
-      reactions: map['reactions'] != null ? Map<String, String>.from(map['reactions']) : null,
-    );
-  }
-}

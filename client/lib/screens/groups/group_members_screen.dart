@@ -57,16 +57,18 @@ class _GroupMembersScreenState extends State<GroupMembersScreen> {
       // In a real app, you would fetch members and available users from your services
       // For now, we'll use placeholder data
       _members = List.generate(5, (index) => User(
-        id: 'member_$index',
+        userId: 'member_$index',
         name: 'Member ${index + 1}',
         email: 'member${index + 1}@example.com',
+        role: UserRole.student,
         isOnline: index % 3 == 0, // Some online, some offline
       ));
       
       _availableUsers = List.generate(10, (index) => User(
-        id: 'user_$index',
+        userId: 'user_$index',
         name: 'User ${index + 1}',
         email: 'user${index + 1}@example.com',
+        role: UserRole.student,
       )).where((user) => !_members.any((m) => m.id == user.id)).toList();
       
       _filteredMembers = List.from(_members);
@@ -88,7 +90,7 @@ class _GroupMembersScreenState extends State<GroupMembersScreen> {
     setState(() {
       _filteredMembers = _members.where((user) {
         return user.name.toLowerCase().contains(query) ||
-               user.email.toLowerCase().contains(query);
+               (user.email?.toLowerCase().contains(query) ?? false);
       }).toList();
     });
   }
@@ -336,7 +338,7 @@ class _GroupMembersScreenState extends State<GroupMembersScreen> {
                         });
                       },
                       title: Text(user.name),
-                      subtitle: Text(user.email),
+                      subtitle: Text(user.email ?? ''),
                       secondary: Avatar(
                         name: user.name,
                         imageUrl: user.avatarUrl,

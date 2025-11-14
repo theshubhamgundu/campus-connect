@@ -8,13 +8,18 @@ import '../../services/group_service.dart';
 import '../../services/user_service.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/loading_button.dart';
+import '../../providers/auth_provider.dart';
 
 class CreateEditGroupScreen extends StatefulWidget {
   final Group? group;
+  final Function(Group)? onGroupCreated;
+  final Function(Group)? onGroupUpdated;
 
   const CreateEditGroupScreen({
     Key? key,
     this.group,
+    this.onGroupCreated,
+    this.onGroupUpdated,
   }) : super(key: key);
 
   @override
@@ -58,37 +63,35 @@ class _CreateEditGroupScreenState extends State<CreateEditGroupScreen> {
     if (mounted) {
       setState(() => _isLoading = true);
     }
-    
     try {
-      // In a real app, you would fetch users from your user service
-      // For now, we'll use a placeholder list
-      _allUsers = List.generate(20, (index) => User(
-        id: 'user_$index',
-        name: 'User ${index + 1}',
-        email: 'user${index + 1}@example.com',
-      ));
+      final userService = Provider.of<UserService>(context, listen: false);
+      final users = await userService.searchUsers('');
       
-      _filteredUsers = List.from(_allUsers);
-      
-      // If editing, populate the form with group data
-      if (widget.group != null) {
-        _nameController.text = widget.group!.name;
-        _descriptionController.text = widget.group!.description ?? '';
-        _isPrivate = widget.group!.isPrivate;
-        _imageUrl = widget.group!.imageUrl;
+      setState(() {
+        _allUsers = users;
+        _filteredUsers = List.from(users);
         
-        // In a real app, you would fetch the group members here
-        // _selectedUsers = await _userService.getGroupMembers(widget.group!.id);
-      }
-      
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+        if (widget.group != null) {
+          _nameController.text = widget.group!.name;
+          _descriptionController.text = widget.group!.description ?? '';
+          _isPrivate = widget.group!.isPrivate;
+          _imageUrl = widget.group!.imageUrl;
+          
+          // Pre-select existing members if any
+          if (widget.group!.members != null) {
+            _selectedUsers = List<User>.from(widget.group!.members!);
+            
+            // Remove already selected users from the list
+            _filteredUsers.removeWhere((user) => 
+                _selectedUsers.any((selected) => selected.id == user.id));
+          }
+        }
+        
+        _isLoading = false;
+      });
     } catch (e) {
-      if (mounted) {
-        _showError('Failed to load data');
-        setState(() => _isLoading = false);
-      }
+      setState(() => _isLoading = false);
+      _showError('Failed to load users: $e');
     }
   }
   
@@ -96,10 +99,14 @@ class _CreateEditGroupScreenState extends State<CreateEditGroupScreen> {
     final query = _searchController.text.toLowerCase();
     
     setState(() {
-      _filteredUsers = _allUsers.where((user) {
-        return user.name.toLowerCase().contains(query) ||
-               user.email.toLowerCase().contains(query);
-      }).toList();
+      _filteredUsers = _allUsers.where((user) => 
+        user.name.toLowerCase().contains(query) ||
+        (user.email?.toLowerCase().contains(query) ?? false)
+      ).toList();
+      
+      // Remove already selected users
+      _filteredUsers.removeWhere((user) => 
+          _selectedUsers.any((selected) => selected.id == user.id));
     });
   }
   
@@ -118,66 +125,69 @@ class _CreateEditGroupScreenState extends State<CreateEditGroupScreen> {
   Future<void> _saveGroup() async {
     if (!_formKey.currentState!.validate()) return;
     
-    if (_selectedUsers.isEmpty) {
-      _showError('Please add at least one member');
-      return;
-    }
-    
     setState(() => _isSaving = true);
     
     try {
       final groupService = Provider.of<GroupService>(context, listen: false);
-      final userService = Provider.of<UserService>(context, listen: false);
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
       
-      final currentUserId = userService.currentUser?.id;
+      final currentUserId = authProvider.currentUser?.id;
+      
       if (currentUserId == null) {
-        throw Exception('User not logged in');
+        throw Exception('User not authenticated');
       }
       
-      // Include current user in the members list
-      final memberIds = _selectedUsers.map((u) => u.id).toList()..add(currentUserId);
+      // Add current user to the group members if not already added
+      if (!_selectedUsers.any((user) => user.id == currentUserId)) {
+        final currentUser = authProvider.currentUser;
+        if (currentUser != null) {
+          _selectedUsers.add(currentUser);
+        }
+      }
       
       if (widget.group == null) {
         // Create new group
-        await groupService.createGroup(
+        final newGroup = Group(
+          id: '', // Will be set by the service
           name: _nameController.text.trim(),
-          description: _descriptionController.text.trim().isEmpty 
-              ? null 
-              : _descriptionController.text.trim(),
-          memberIds: memberIds,
+          description: _descriptionController.text.trim(),
           isPrivate: _isPrivate,
-          imageFile: _imageFile,
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+          createdBy: currentUserId,
+          memberIds: _selectedUsers.map((u) => u.id).toList(),
+          members: _selectedUsers,
+          imageUrl: _imageUrl,
         );
         
-        if (mounted) {
-          Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Group created successfully')),
-          );
-        }
+        await groupService.createGroup(
+          name: newGroup.name,
+          description: newGroup.description,
+          isPrivate: newGroup.isPrivate,
+          memberIds: newGroup.memberIds,
+          imageFile: _imageFile,
+        );
       } else {
         // Update existing group
         await groupService.updateGroup(
           groupId: widget.group!.id,
           name: _nameController.text.trim(),
-          description: _descriptionController.text.trim().isEmpty 
-              ? null 
-              : _descriptionController.text.trim(),
-          memberIds: memberIds,
+          description: _descriptionController.text.trim(),
           isPrivate: _isPrivate,
+          members: _selectedUsers.map((u) => u.id).toList(),
           imageFile: _imageFile,
         );
-        
-        if (mounted) {
-          Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Group updated successfully')),
-          );
-        }
+      }
+      
+      if (mounted) {
+        Navigator.of(context).pop(true);
       }
     } catch (e) {
-      _showError('Failed to save group');
-      setState(() => _isSaving = false);
+      _showError('Failed to save group: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
     }
   }
   
@@ -419,7 +429,7 @@ class _CreateEditGroupScreenState extends State<CreateEditGroupScreen> {
                                           imageUrl: user.avatarUrl,
                                         ),
                                         title: Text(user.name),
-                                        subtitle: Text(user.email),
+                                        subtitle: Text(user.email ?? ''),
                                         trailing: isSelected
                                             ? const Icon(Icons.check_circle, color: Colors.green)
                                             : const Icon(Icons.add_circle_outline),

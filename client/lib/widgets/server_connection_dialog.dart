@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/websocket_service.dart';
+import '../services/connection_service.dart';
 import '../config/server_config.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'dart:async';
@@ -88,8 +89,8 @@ class _ServerConnectionDialogState extends State<ServerConnectionDialog> {
       // Save the server configuration
       await ServerConfig.saveServerConfig(ip, port, useHttps: _useHttps);
       
-      // Connect to the server
-      await _webSocketService.connect();
+      // Connect to the server via ConnectionService (set manual IP)
+      await ConnectionService.instance.connectTo(ip);
       
       if (mounted) {
         Navigator.of(context).pop(true);

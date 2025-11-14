@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/group.dart';
@@ -5,6 +6,7 @@ import '../../services/group_service.dart';
 import '../../services/websocket_service.dart';
 import '../../widgets/group_list_item.dart';
 import 'create_edit_group_screen.dart';
+import 'group_chat_screen.dart';
 
 class GroupsScreen extends StatefulWidget {
   const GroupsScreen({Key? key}) : super(key: key);
@@ -23,7 +25,10 @@ class _GroupsScreenState extends State<GroupsScreen> {
   @override
   void initState() {
     super.initState();
-    _loadGroups();
+    // Delay the load to allow scaffold to be ready
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadGroups();
+    });
   }
 
   @override
@@ -34,44 +39,46 @@ class _GroupsScreenState extends State<GroupsScreen> {
   }
 
   Future<void> _loadGroups() async {
-    final groupService = Provider.of<GroupService>(context, listen: false);
-    final webSocketService = Provider.of<WebSocketService>(context, listen: false);
-    
-    if (!webSocketService.isConnected) {
-      setState(() => _isLoading = false);
-      _showError('No connection to server. Please check your internet connection.');
-      return;
-    }
-
     try {
-      setState(() => _isLoading = true);
+      final groupService = Provider.of<GroupService>(context, listen: false);
+      final webSocketService = Provider.of<WebSocketService>(context, listen: false);
       
-      // Load initial groups
-      await groupService.loadGroups();
-      
-      if (mounted) {
-        setState(() => _isLoading = false);
+      if (!webSocketService.isConnected) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          _showError('No connection to server. Please check your internet connection.');
+        }
+        return;
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _showError('Failed to load groups: ${e.toString()}');
-      }
-    }
 
-    // Listen for group updates
-    _groupsSubscription = groupService.watchGroups().listen((groups) {
+      // Load initial groups
+      final groups = await groupService.getUserGroups();
       if (mounted) {
         setState(() {
           _groups = groups;
-          _filterGroups(_searchController.text);
+          _isLoading = false;
         });
       }
-    }, onError: (error) {
+
+      // Listen for group updates
+      _groupsSubscription = groupService.groupStream.listen((groups) {
+        if (mounted) {
+          setState(() {
+            _groups = groups;
+            _filterGroups(_searchController.text);
+          });
+        }
+      }, onError: (error) {
+        if (mounted) {
+          _showError('Error updating groups: ${error.toString()}');
+        }
+      });
+    } catch (e) {
       if (mounted) {
-        _showError('Error updating groups: ${error.toString()}');
+        setState(() => _isLoading = false);
+        _showError('Failed to initialize groups: ${e.toString()}');
       }
-    });
+    }
   }
 
   void _filterGroups(String query) {
@@ -266,8 +273,22 @@ class _GroupsScreenState extends State<GroupsScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : _filteredGroups.isEmpty
                     ? Center(
-                            ),
-                          ),
+                        child: Text(
+                          'No groups found',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: _filteredGroups.length,
+                        itemBuilder: (context, index) {
+                          final group = _filteredGroups[index];
+                          return GroupListItem(
+                            group: group,
+                            onTap: () => _navigateToGroupChat(group),
+                            isConnected: true,
+                          );
+                        },
+                      ),
           ),
         ],
       ),

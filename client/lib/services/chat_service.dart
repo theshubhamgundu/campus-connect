@@ -3,7 +3,10 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'websocket_service.dart';
+import 'connection_service.dart';
 import '../models/message.dart';
+import '../models/chat.dart';
+import '../models/file_transfer.dart';
 
 class ChatService {
   static final ChatService _instance = ChatService._internal();
@@ -16,44 +19,47 @@ class ChatService {
 
   // Initialize the chat service
   Future<void> initialize() async {
-    await _webSocketService.initialize();
-    
-    // Listen for incoming messages from server (type: 'message')
-    _webSocketService.addListener('message', (data) {
+    // Listen for incoming messages from ConnectionService (type: 'chat' or 'message')
+    ConnectionService.instance.incomingMessages.listen((data) {
       try {
-        // If payload is already our client format
-        if (data is Map<String, dynamic> && data.containsKey('senderId')) {
-          final message = Message.fromJson(data as Map<String, dynamic>);
-          _handleIncomingMessage(message);
-          return;
+        final type = data['type']?.toString() ?? '';
+        if (type == 'chat' || type == 'message' || type == 'message') {
+          final from = (data['from'] ?? '') as String;
+          final to = (data['to'] ?? '') as String;
+          final text = (data['message'] ?? data['text'] ?? '') as String;
+          final ts = (data['timestamp'] ?? data['ts'] ?? DateTime.now().toIso8601String()) as String;
+          if (from.isEmpty || to.isEmpty) return;
+          final msg = Message(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            senderId: from,
+            receiverId: to,
+            text: text,
+            timestamp: DateTime.tryParse(ts) ?? DateTime.now(),
+            status: MessageStatus.sent,
+            type: MessageType.text,
+          );
+          _handleIncomingMessage(msg);
         }
-        // Server format: {type:'message', from, to, text, ts}
-        final from = (data['from'] ?? '') as String;
-        final to = (data['to'] ?? '') as String;
-        final text = (data['text'] ?? '') as String;
-        final ts = (data['ts'] ?? DateTime.now().toIso8601String()) as String;
-        if (from.isEmpty || to.isEmpty) return;
-        final msg = Message(
-          id: DateTime.now().microsecondsSinceEpoch.toString(),
-          senderId: from,
-          receiverId: to,
-          text: text,
-          timestamp: DateTime.tryParse(ts) ?? DateTime.now(),
-          status: MessageStatus.sent,
-          type: MessageType.text,
-        );
-        _handleIncomingMessage(msg);
       } catch (_) {}
     });
 
     // Listen for file transfers
-    _webSocketService.addListener('file_chunk', (data) {
+    _webSocketService.on('file_chunk', (data) {
       _handleFileChunk(data);
     });
 
-    _webSocketService.addListener('file_complete', (data) {
+    _webSocketService.on('file_complete', (data) {
       _handleFileComplete(data);
     });
+  }
+
+  // Watch all chats (for simplicity, return empty stream for now)
+  Stream<List<Chat>> watchChats() {
+    final controller = StreamController<List<Chat>>.broadcast();
+    // TODO: Implement actual chat list watching from server
+    // For now, return an empty list wrapped in a stream
+    controller.add([]);
+    return controller.stream;
   }
 
   // Send a text message
@@ -62,9 +68,15 @@ class ChatService {
     required String text,
     String? replyToMessageId,
   }) async {
+    // Ensure we have a valid user ID
+    final userId = ConnectionService.instance.currentUserId ?? '';
+    if (userId.isEmpty) {
+      throw Exception('Cannot send message: User not authenticated');
+    }
+
     final message = Message(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-      senderId: _webSocketService.userId!,
+      senderId: userId,
       receiverId: receiverId,
       text: text,
       timestamp: DateTime.now(),
@@ -73,10 +85,13 @@ class ChatService {
       replyToMessageId: replyToMessageId,
     );
 
-    await _webSocketService.sendType('message', {
-      'to': receiverId,
-      'text': text,
-    });
+    try {
+      await ConnectionService.instance.sendChatMessage(receiverId, text);
+    } catch (e) {
+      // Update message status to failed if sending fails
+      message.status = MessageStatus.error;
+      rethrow;
+    }
 
     // Update local state
     _handleIncomingMessage(message);
@@ -106,11 +121,11 @@ class ChatService {
       ),
     );
 
-    // First, send the message with file metadata
-    await _webSocketService.send(
-      WebSocketService.eventMessage,
-      message.toJson(),
-    );
+    // First, send the message with optional caption
+    await _webSocketService.sendType('message', {
+      'to': receiverId,
+      'text': caption ?? '',
+    });
 
     // Then send the file in chunks
     await _webSocketService.sendFile(
@@ -139,14 +154,7 @@ class ChatService {
     _messageControllers[chatId]!.add(message);
   }
 
-  // Handle incoming calls
-  void _handleIncomingCall(Call call) {
-    final callId = call.id;
-    if (!_callControllers.containsKey(callId)) {
-      _callControllers[callId] = StreamController<Call>.broadcast();
-    }
-    _callControllers[callId]!.add(call);
-  }
+  // (Call handling removed for now; will be added with flutter_webrtc later.)
 
   // Handle file chunks
   void _handleFileChunk(Map<String, dynamic> data) {
@@ -159,7 +167,7 @@ class ChatService {
       _fileTransferControllers[fileId] = StreamController<FileTransfer>.broadcast();
     }
 
-    _fileTransferControllers[fileId]!.add(FileTransfer(
+    _fileTransferControllers[fileId]!.add(FileTransfer.chunk(
       fileId: fileId,
       chunkIndex: chunkIndex,
       totalChunks: totalChunks,
@@ -245,14 +253,10 @@ class ChatService {
     for (final controller in _messageControllers.values) {
       await controller.close();
     }
-    for (final controller in _callControllers.values) {
-      await controller.close();
-    }
     for (final controller in _fileTransferControllers.values) {
       await controller.close();
     }
     _messageControllers.clear();
-    _callControllers.clear();
     _fileTransferControllers.clear();
     await _webSocketService.dispose();
   }
