@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../services/chat_service_v2.dart';
+import 'package:file_picker/file_picker.dart';
+import 'dart:convert';
+import 'dart:io';
+import '../services/chat_service_v3.dart';
+import '../services/call_service_v2.dart';
 import '../services/connection_service.dart';
-import '../services/call_service.dart';
 import '../models/message.dart';
 import 'incoming_call_screen.dart';
 
@@ -29,10 +32,11 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
   @override
   void initState() {
     super.initState();
+    print('🎬 DirectChatScreenV2.initState called for ${widget.receiverId}');
     _checkConnection();
     // Mark messages as read when entering this conversation
     Future.microtask(() {
-      final chatService = Provider.of<ChatServiceV2>(context, listen: false);
+      final chatService = Provider.of<ChatServiceV3>(context, listen: false);
       final currentUserId = ConnectionService.instance.currentUserId;
       if (currentUserId != null) {
         chatService.markAsRead(currentUserId, widget.receiverId);
@@ -42,7 +46,12 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
 
   void _checkConnection() {
     final status = ConnectionService.instance.connectionStatus.value;
-    setState(() => _isConnected = status == ConnectionStatus.connected);
+    print('🔌 Connection status: $status');
+    
+    // For debugging: always enable send button, connection is managed by WebSocket
+    // The WebSocket will reconnect automatically if needed
+    setState(() => _isConnected = true);  // Changed: always true for now
+    print('   _isConnected set to: true (for testing)');
 
     // Subscribe to connection status changes
     ConnectionService.instance.connectionStatus.addListener(_checkConnection);
@@ -70,18 +79,30 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
 
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty) {
+      print('⚠️ [SendButton] Message is empty, not sending');
+      return;
+    }
 
+    print('\n🔴 [SendButton] ============================================');
+    print('🔴 [SendButton] User tapped SEND button');
+    print('🔴 [SendButton] Message: "$text"');
+    print('🔴 [SendButton] Recipient: ${widget.receiverId}');
+    print('🔴 [SendButton] ============================================');
     _messageController.clear();
 
     try {
-      final chatService = Provider.of<ChatServiceV2>(context, listen: false);
+      final chatService = Provider.of<ChatServiceV3>(context, listen: false);
+      print('🔴 [SendButton] Calling chatService.sendMessage()...');
       await chatService.sendMessage(
         toUserId: widget.receiverId,
         messageText: text,
       );
+      print('🔴 [SendButton] chatService.sendMessage() completed');
+      print('✅ Message sent successfully\n');
       _scrollToBottom();
     } catch (e) {
+      print('❌ Error sending message: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to send message: $e')),
@@ -112,15 +133,25 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
           IconButton(
             icon: const Icon(Icons.call),
             onPressed: _isConnected
-                ? () {
-                    final callService = CallService();
-                    callService.sendCallRequest(
-                      widget.receiverId,
-                      widget.receiverName,
-                    );
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Calling ${widget.receiverName}...')),
-                    );
+                ? () async {
+                    try {
+                      final callService = Provider.of<CallService>(context, listen: false);
+                      await callService.sendCallRequest(
+                        widget.receiverId,
+                        widget.receiverName,
+                      );
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Calling ${widget.receiverName}...')),
+                        );
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Failed to call: $e')),
+                        );
+                      }
+                    }
                   }
                 : null,
             tooltip: 'Call',
@@ -156,7 +187,7 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
             ),
           // Messages list from ChatService
           Expanded(
-            child: Consumer<ChatServiceV2>(
+            child: Consumer<ChatServiceV3>(
               builder: (context, chatService, _) {
                 if (currentUserId == null) {
                   return const Center(child: Text('User not authenticated'));
@@ -282,7 +313,7 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
               title: const Text('Share Image'),
               onTap: () {
                 Navigator.pop(ctx);
-                _shareImage();
+                _pickAndSendFile('image');
               },
             ),
             ListTile(
@@ -290,19 +321,15 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
               title: const Text('Share Document'),
               onTap: () {
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Document sharing coming soon')),
-                );
+                _pickAndSendFile('document');
               },
             ),
             ListTile(
-              leading: const Icon(Icons.location_on),
-              title: const Text('Share Location'),
+              leading: const Icon(Icons.audio_file),
+              title: const Text('Share Audio'),
               onTap: () {
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Location sharing coming soon')),
-                );
+                _pickAndSendFile('audio');
               },
             ),
           ],
@@ -311,14 +338,67 @@ class _DirectChatScreenV2State extends State<DirectChatScreenV2> {
     );
   }
 
-  void _shareImage() {
-    // Placeholder for image sharing functionality
-    // In a real app, you would:
-    // 1. Use image_picker to select an image
-    // 2. Convert to base64
-    // 3. Send via WebSocket with file_metadata + file_chunk messages
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Image sharing coming soon')),
-    );
+  Future<void> _pickAndSendFile(String fileType) async {
+    try {
+      FilePickerResult? result;
+
+      if (fileType == 'image') {
+        result = await FilePicker.platform.pickFiles(
+          type: FileType.image,
+          allowMultiple: false,
+        );
+      } else if (fileType == 'document') {
+        result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: ['pdf', 'doc', 'docx', 'txt', 'xlsx'],
+          allowMultiple: false,
+        );
+      } else if (fileType == 'audio') {
+        result = await FilePicker.platform.pickFiles(
+          type: FileType.audio,
+          allowMultiple: false,
+        );
+      }
+
+      if (result != null && result.files.isNotEmpty) {
+        final file = result.files.first;
+        final filePath = file.path;
+
+        if (filePath != null) {
+          // Read file and convert to base64
+          final fileBytes = await File(filePath).readAsBytes();
+          final fileDataBase64 = base64Encode(fileBytes);
+
+          if (mounted) {
+            // Show progress indicator
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Sending ${file.name}...')),
+            );
+
+            // Send file via ChatServiceV3
+            final chatService = Provider.of<ChatServiceV3>(context, listen: false);
+            await chatService.sendFile(
+              toUserId: widget.receiverId,
+              fileName: file.name,
+              fileType: fileType,
+              fileDataBase64: fileDataBase64,
+            );
+
+            if (mounted) {
+              _scrollToBottom();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('${file.name} sent successfully')),
+              );
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to send file: $e')),
+        );
+      }
+    }
   }
 }

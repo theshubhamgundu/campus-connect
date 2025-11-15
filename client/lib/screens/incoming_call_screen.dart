@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../services/call_service.dart';
+import '../services/call_service_v2.dart';
 
 /// Full-screen incoming call popup with accept/reject buttons
 class IncomingCallScreen extends StatefulWidget {
@@ -34,7 +34,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
     return Consumer<CallService>(
       builder: (context, callService, _) {
         final incomingCall = callService.incomingCall;
-        if (incomingCall == null) return SizedBox.shrink();
+        if (incomingCall == null) return const SizedBox.shrink();
 
         return Dialog(
           backgroundColor: Colors.transparent,
@@ -70,7 +70,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                             width: 3,
                           ),
                         ),
-                        child: Center(
+                        child: const Center(
                           child: Icon(
                             Icons.person_outline,
                             size: 60,
@@ -107,8 +107,16 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                     // Reject button
                     GestureDetector(
                       onTap: () async {
-                        await callService.rejectCall();
-                        if (mounted) Navigator.of(context).pop();
+                        try {
+                          await callService.rejectCall();
+                          if (mounted) Navigator.of(context).pop();
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Failed to reject call: $e')),
+                            );
+                          }
+                        }
                       },
                       child: Container(
                         width: 70,
@@ -128,15 +136,23 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                     // Accept button
                     GestureDetector(
                       onTap: () async {
-                        await callService.acceptCall();
-                        if (mounted) {
-                          Navigator.of(context).pop();
-                          // Navigate to in-call screen
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => InCallScreen(),
-                            ),
-                          );
+                        try {
+                          await callService.acceptCall();
+                          if (mounted) {
+                            Navigator.of(context).pop();
+                            // Navigate to in-call screen
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => const InCallScreen(),
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Failed to accept call: $e')),
+                            );
+                          }
                         }
                       },
                       child: Container(
@@ -181,7 +197,13 @@ class _InCallScreenState extends State<InCallScreen> {
     // Create a stream that updates every second
     _durationStream = Stream.periodic(
       const Duration(seconds: 1),
-      (_) => context.read<CallService>().activeCall?.duration ?? Duration.zero,
+      (_) {
+        try {
+          return Provider.of<CallService>(context, listen: false).activeCall?.duration ?? Duration.zero;
+        } catch (e) {
+          return Duration.zero;
+        }
+      },
     );
   }
 
@@ -242,7 +264,7 @@ class _InCallScreenState extends State<InCallScreen> {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        activeCall.otherUserName,
+                        activeCall.otherUserId,
                         style: const TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.bold,
@@ -254,8 +276,7 @@ class _InCallScreenState extends State<InCallScreen> {
                       StreamBuilder<Duration>(
                         stream: _durationStream,
                         builder: (context, snapshot) {
-                          final duration =
-                              snapshot.data ?? Duration.zero;
+                          final duration = snapshot.data ?? Duration.zero;
                           return Text(
                             _formatDuration(duration),
                             style: const TextStyle(
@@ -272,8 +293,16 @@ class _InCallScreenState extends State<InCallScreen> {
                   // End call button
                   GestureDetector(
                     onTap: () async {
-                      await callService.endCall();
-                      if (mounted) Navigator.of(context).pop();
+                      try {
+                        await callService.endCall();
+                        if (mounted) Navigator.of(context).pop();
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Failed to end call: $e')),
+                          );
+                        }
+                      }
                     },
                     child: Container(
                       width: 80,

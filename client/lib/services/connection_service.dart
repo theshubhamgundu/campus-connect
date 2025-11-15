@@ -308,20 +308,23 @@ class ConnectionService {
 
   /// Request online users list from server and wait for response.
   /// FIX #9: Throttled - only request every 30 seconds at minimum
-  Future<List<dynamic>> fetchOnlineUsersRaw({Duration timeout = const Duration(seconds: 5)}) async {
+  /// skipThrottle: If true, bypass throttle (for group creation UI that needs immediate response)
+  Future<List<dynamic>> fetchOnlineUsersRaw({Duration timeout = const Duration(seconds: 5), bool skipThrottle = false}) async {
     // If websocket is not connected, return empty list immediately
     if (_ws == null || connectionStatus.value != ConnectionStatus.connected) {
       return <dynamic>[];
     }
 
-    // FIX #9: Prevent spam - throttle to once per 30 seconds
-    final now = DateTime.now();
-    final msSinceLastFetch = now.difference(_lastOnlineUsersFetch).inMilliseconds;
-    if (msSinceLastFetch < _onlineUsersFetchIntervalMs) {
-      print('Throttled: Skipping online users fetch (last was ${msSinceLastFetch}ms ago)');
-      return <dynamic>[];
+    // FIX #9: Prevent spam - throttle to once per 30 seconds (unless skipThrottle=true)
+    if (!skipThrottle) {
+      final now = DateTime.now();
+      final msSinceLastFetch = now.difference(_lastOnlineUsersFetch).inMilliseconds;
+      if (msSinceLastFetch < _onlineUsersFetchIntervalMs) {
+        print('Throttled: Skipping online users fetch (last was ${msSinceLastFetch}ms ago)');
+        return <dynamic>[];
+      }
     }
-    _lastOnlineUsersFetch = now;
+    _lastOnlineUsersFetch = DateTime.now();
 
     final completer = Completer<List<dynamic>>();
     StreamSubscription? sub;
@@ -351,8 +354,8 @@ class ConnectionService {
     }
   }
 
-  Future<List<OnlineUser>> fetchOnlineUsers({Duration timeout = const Duration(seconds: 5)}) async {
-    final raw = await fetchOnlineUsersRaw(timeout: timeout);
+  Future<List<OnlineUser>> fetchOnlineUsers({Duration timeout = const Duration(seconds: 5), bool skipThrottle = false}) async {
+    final raw = await fetchOnlineUsersRaw(timeout: timeout, skipThrottle: skipThrottle);
     final List<OnlineUser> out = [];
     for (final u in raw) {
       try {
@@ -363,15 +366,26 @@ class ConnectionService {
   }
 
   void _sendRaw(String jsonStr) {
+    print('🟡 [_sendRaw] Called');
+    print('🟡 [_sendRaw]   WebSocket: ${_ws != null ? 'connected' : 'null'}');
+    print('🟡 [_sendRaw]   Status: ${connectionStatus.value}');
+    print('🟡 [_sendRaw]   JSON length: ${jsonStr.length} bytes');
+    print('🟡 [_sendRaw]   First 80 chars: ${jsonStr.substring(0, jsonStr.length > 80 ? 80 : jsonStr.length)}');
+    
     if (_ws != null) {
       try {
+        print('🟡 [_sendRaw] WebSocket is connected, calling add()...');
         _ws!.add(jsonStr);
+        print('🟡 [_sendRaw] ✅ WebSocket.add() succeeded - MESSAGE SENT!');
       } catch (e) {
-        print('Send failed, queueing message: $e');
+        print('🟡 [_sendRaw] ❌ WebSocket.add() failed: $e');
+        print('🟡 [_sendRaw] Queueing message for retry');
         _outgoingQueue.add(jsonStr);
       }
     } else {
+      print('🟡 [_sendRaw] ⚠️ WebSocket is null, queueing message');
       _outgoingQueue.add(jsonStr);
+      print('🟡 [_sendRaw]   Queue now has ${_outgoingQueue.length} messages');
     }
   }
 
@@ -391,9 +405,28 @@ class ConnectionService {
 
   /// Send raw JSON message (public interface for custom message types)
   void sendMessage(Map<String, dynamic> payload) {
+    print('\n🔵 [ConnectionService.sendMessage] ============================================');
+    print('🔵 [ConnectionService] CALLED with payload:');
+    print('🔵 [ConnectionService]   Type: ${payload['type']}');
+    print('🔵 [ConnectionService]   Keys: ${payload.keys.toList()}');
+    
+    if (payload['type'] == 'chat_message') {
+      print('🔵 [ConnectionService]   from: ${payload['from']}');
+      print('🔵 [ConnectionService]   to: ${payload['to']}');
+      print('🔵 [ConnectionService]   message: ${payload['message']}');
+      print('🔵 [ConnectionService]   has iv: ${payload.containsKey('iv')}');
+      print('🔵 [ConnectionService]   has ciphertext: ${payload.containsKey('ciphertext')}');
+    }
+    
+    print('🔵 [ConnectionService] WebSocket state: _ws=${_ws != null ? 'connected' : 'null'}');
+    print('🔵 [ConnectionService] Connection status: ${connectionStatus.value}');
+    
     final jsonStr = jsonEncode(payload);
+    print('🔵 [ConnectionService] JSON encoded (${jsonStr.length} bytes)');
+    print('🔵 [ConnectionService] Calling _sendRaw()...');
     _sendRaw(jsonStr);
-    print('Sent message: ${payload['type']}');
+    print('🔵 [ConnectionService] _sendRaw() returned');
+    print('🔵 [ConnectionService] ============================================\n');
   }
 
   /// Forcefully close connection (e.g., on logout)

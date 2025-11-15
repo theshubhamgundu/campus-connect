@@ -36,12 +36,15 @@ class ChatServiceV3 extends ChangeNotifier {
   final Map<String, int> _unreadCounts = {};
 
   // Reference to persistent storage
-  final _storage = MessageStorageService();
+  late MessageStorageService _storage;
 
   // Reference to encryption service
-  final _encryption = EncryptionService();
+  late EncryptionService _encryption;
 
-  const ChatServiceV3();
+  ChatServiceV3() {
+    _storage = MessageStorageService();
+    _encryption = EncryptionService();
+  }
 
   /// Generate a conversation ID from two user IDs (order-independent)
   static String conversationIdFor(String userA, String userB) {
@@ -52,6 +55,8 @@ class ChatServiceV3 extends ChangeNotifier {
   /// Initialize by loading persisted messages and setting up WebSocket listener
   Future<void> initialize() async {
     try {
+      print('🔧 ChatServiceV3.initialize() starting...');
+      
       // Initialize encryption
       await _encryption.initialize();
       print('✅ Encryption initialized');
@@ -65,9 +70,12 @@ class ChatServiceV3 extends ChangeNotifier {
       if (currentUserId != null) {
         await _loadStoredConversations(currentUserId);
         print('✅ ChatServiceV3: Loaded stored conversations into memory');
+      } else {
+        print('⚠️ ChatServiceV3.initialize: currentUserId is null, skipping conversation load');
       }
 
       // Set up WebSocket listener for incoming messages
+      print('📨 Setting up WebSocket listener for incoming messages...');
       ConnectionService.instance.incomingMessages.listen((msg) {
         final type = msg['type']?.toString() ?? '';
         if (type == 'chat_message') {
@@ -78,8 +86,11 @@ class ChatServiceV3 extends ChangeNotifier {
           _handleCallEvent(msg);
         }
       });
-    } catch (e) {
-      debugPrint('Error initializing ChatServiceV3: $e');
+      print('✅ WebSocket listener setup complete');
+    } catch (e, stackTrace) {
+      print('❌ Error initializing ChatServiceV3: $e');
+      print('   Stack trace: $stackTrace');
+      debugPrint('Error initializing ChatServiceV3: $e\n$stackTrace');
     }
   }
 
@@ -118,25 +129,31 @@ class ChatServiceV3 extends ChangeNotifier {
   /// Handle incoming chat message from WebSocket (encrypted)
   void _handleIncomingChatMessage(Map<String, dynamic> msg) {
     try {
-      final from = msg['from']?.toString() ?? '';
-      final to = msg['to']?.toString() ?? '';
+      // Extract sender/recipient info
+      final from = msg['senderId']?.toString() ?? msg['from']?.toString() ?? '';
+      final to = msg['receiverId']?.toString() ?? msg['to']?.toString() ?? '';
       String text = '';
       String messageId = const Uuid().v4();
 
       final currentUserId = ConnectionService.instance.currentUserId;
       final isMine = from == currentUserId;
 
-      // Decrypt if encrypted
-      if (EncryptionService.isEncrypted(msg)) {
+      // Check if message is encrypted
+      final isEncrypted = msg['__encrypted'] == true || (msg.containsKey('iv') && msg.containsKey('ciphertext'));
+      
+      if (isEncrypted) {
         try {
+          print('🟠 [ChatService] Decrypting incoming message from $from...');
           final decrypted = _encryption.decryptJson(msg);
-          text = decrypted['text']?.toString() ?? '';
+          text = decrypted['message']?.toString() ?? decrypted['text']?.toString() ?? '';
+          print('🟠 [ChatService] ✅ Decryption successful: "${text.length > 50 ? text.substring(0, 50) + "..." : text}"');
         } catch (e) {
           debugPrint('⚠️ Failed to decrypt message: $e');
           text = '[Encrypted message - decryption failed]';
         }
       } else {
         text = msg['message']?.toString() ?? msg['text']?.toString() ?? '';
+        print('🟠 [ChatService] Plaintext message received from $from');
       }
 
       if (from.isEmpty || to.isEmpty || text.isEmpty) return;
@@ -187,30 +204,38 @@ class ChatServiceV3 extends ChangeNotifier {
   /// Handle incoming file message
   void _handleIncomingFileMessage(Map<String, dynamic> msg) {
     try {
-      final from = msg['from']?.toString() ?? '';
-      final to = msg['to']?.toString() ?? '';
-      final fileName = msg['fileName']?.toString() ?? 'file';
+      // Extract sender/recipient and file info
+      final from = msg['senderId']?.toString() ?? msg['from']?.toString() ?? '';
+      final to = msg['receiverId']?.toString() ?? msg['to']?.toString() ?? '';
       final fileType = msg['fileType']?.toString() ?? 'application/octet-stream';
       final currentUserId = ConnectionService.instance.currentUserId;
       final isMine = from == currentUserId;
-
-      if (from.isEmpty || to.isEmpty) return;
-
+      
+      String fileName = 'file';
       String fileDataBase64 = '';
-
-      // Decrypt if encrypted
-      if (EncryptionService.isEncrypted(msg)) {
+      
+      // Check if file data is encrypted
+      final isEncrypted = msg['__encrypted'] == true || (msg.containsKey('iv') && msg.containsKey('ciphertext'));
+      
+      if (isEncrypted) {
         try {
+          print('🞨 [ChatService] Decrypting file message from $from...');
           final decrypted = _encryption.decryptJson(msg);
+          fileName = decrypted['fileName']?.toString() ?? 'file';
           fileDataBase64 = decrypted['fileData']?.toString() ?? '';
+          print('🞨 [ChatService] ✅ File decrypted: $fileName');
         } catch (e) {
-          debugPrint('⚠️ Failed to decrypt file: $e');
+          print('🞨 [ChatService] ⚠️ Failed to decrypt file: $e');
+          fileName = '[Encrypted file - decryption failed]';
+          fileDataBase64 = '';
         }
       } else {
+        fileName = msg['fileName']?.toString() ?? 'file';
         fileDataBase64 = msg['fileData']?.toString() ?? '';
+        print('🞨 [ChatService] Plaintext file message received from $from');
       }
 
-      if (fileDataBase64.isEmpty) return;
+      if (from.isEmpty || to.isEmpty || fileDataBase64.isEmpty) return;
 
       final timestamp = msg['timestamp'] != null
           ? DateTime.tryParse(msg['timestamp'].toString()) ?? DateTime.now()
@@ -286,11 +311,20 @@ class ChatServiceV3 extends ChangeNotifier {
     required String messageText,
   }) async {
     try {
-      if (messageText.trim().isEmpty) return;
+      if (messageText.trim().isEmpty) {
+        print('⚠️ [ChatService] Message text is empty');
+        return;
+      }
 
       final currentUserId = ConnectionService.instance.currentUserId;
+      print('\n🟠 [ChatService] ============================================');
+      print('🟠 [ChatService.sendMessage] CALLED');
+      print('🟠 [ChatService] currentUserId=$currentUserId');
+      print('🟠 [ChatService] toUserId=$toUserId');
+      
       if (currentUserId == null) {
-        throw Exception('Not authenticated');
+        print('❌ [ChatService] currentUserId is NULL - cannot send');
+        throw Exception('Not authenticated - currentUserId is null');
       }
 
       final messageId = const Uuid().v4();
@@ -303,14 +337,17 @@ class ChatServiceV3 extends ChangeNotifier {
         receiverId: toUserId,
         text: messageText,
         timestamp: timestamp,
-        status: MessageStatus.pending,
+        status: MessageStatus.sent,
         type: MessageType.text,
       );
 
       // Add to memory immediately for UI
+      print('🟠 [ChatService] Adding to memory...');
       addMessage(message);
+      print('🟠 [ChatService] ✅ Added to memory');
 
       // Persist to Hive
+      print('🟠 [ChatService] Saving to Hive storage...');
       final stored = StoredMessage(
         id: messageId,
         fromUserId: currentUserId,
@@ -321,6 +358,7 @@ class ChatServiceV3 extends ChangeNotifier {
         messageType: 'text',
       );
       await _storage.saveMessage(stored);
+      print('🟠 [ChatService] ✅ Saved to Hive');
 
       // Prepare payload for transmission
       final payload = {
@@ -331,23 +369,52 @@ class ChatServiceV3 extends ChangeNotifier {
         'timestamp': timestamp.toIso8601String(),
       };
 
-      // Encrypt the payload
-      final encrypted = _encryption.encryptJson(payload);
-      final transmitPayload = {
-        'type': 'chat_message',
-        'from': currentUserId,
-        'to': toUserId,
-        'iv': encrypted['iv'],
-        'ciphertext': encrypted['ciphertext'],
-        'timestamp': timestamp.toIso8601String(),
-      };
+      print('🟠 [ChatService] Payload prepared (plaintext):');
+      print('🟠 [ChatService]   type: ${payload['type']}');
+      print('🟠 [ChatService]   from: ${payload['from']}');
+      print('🟠 [ChatService]   to: ${payload['to']}');
+      print('🟠 [ChatService]   message: ${payload['message']}');
+
+      // Try to encrypt message content, but always include from/to plaintext for routing
+      Map<String, dynamic> transmitPayload = payload;
+      try {
+        print('🟠 [ChatService] Attempting AES-256 encryption of message...');
+        // Encrypt only the message and timestamp, keep routing fields plaintext
+        final contentToEncrypt = {
+          'message': messageText,
+          'timestamp': timestamp.toIso8601String(),
+        };
+        final encrypted = _encryption.encryptJson(contentToEncrypt);
+        transmitPayload = {
+          'type': 'chat_message',
+          'from': currentUserId,  // Plaintext for routing
+          'to': toUserId,         // Plaintext for routing
+          'iv': encrypted['iv'],
+          'ciphertext': encrypted['ciphertext'],
+          '__encrypted': true,    // Flag to indicate encrypted content
+        };
+        print('🟠 [ChatService] ✅ AES-256 encryption successful');
+        final iv = encrypted['iv'];
+        final ciphertext = encrypted['ciphertext'];
+        if (iv != null) print('🟠 [ChatService]   IV: ${iv.substring(0, iv.length > 16 ? 16 : iv.length)}...');
+        if (ciphertext != null) print('🟠 [ChatService]   Ciphertext length: ${ciphertext.length} bytes');
+      } catch (encryptError) {
+        print('🟠 [ChatService] ⚠️ Encryption failed: $encryptError');
+        print('🟠 [ChatService] Falling back to plaintext transmission');
+        // Fallback to plaintext (for testing)
+      }
 
       // Send via WebSocket
+      print('🟠 [ChatService] About to call ConnectionService.sendMessage()...');
+      print('🟠 [ChatService]   Payload keys: ${transmitPayload.keys.toList()}');
       ConnectionService.instance.sendMessage(transmitPayload);
+      print('🟠 [ChatService] ✅ ConnectionService.sendMessage() returned');
 
-      print('✉️ Message sent (encrypted): $currentUserId → $toUserId');
-    } catch (e) {
-      debugPrint('Error sending message: $e');
+      print('🟠 [ChatService] ============================================\n');
+    } catch (e, stackTrace) {
+      print('❌ [ChatService] Error sending message: $e');
+      print('❌ [ChatService]   Stack trace: $stackTrace');
+      debugPrint('Error sending message: $e\n$stackTrace');
     }
   }
 
@@ -374,7 +441,7 @@ class ChatServiceV3 extends ChangeNotifier {
         receiverId: toUserId,
         text: '📎 $fileName',
         timestamp: timestamp,
-        status: MessageStatus.pending,
+        status: MessageStatus.sent,
         type: MessageType.file,
         metadata: {
           'fileName': fileName,
@@ -417,8 +484,8 @@ class ChatServiceV3 extends ChangeNotifier {
       final encrypted = _encryption.encryptJson(payload);
       final transmitPayload = {
         'type': 'file_message',
-        'from': currentUserId,
-        'to': toUserId,
+        'senderId': currentUserId,
+        'receiverId': toUserId,
         'fileName': fileName, // Send plaintext so recipient knows what file it is
         'fileType': fileType,
         'iv': encrypted['iv'],
@@ -437,12 +504,13 @@ class ChatServiceV3 extends ChangeNotifier {
 
   /// Add message to memory and notify listeners
   void addMessage(Message message) {
-    final currentUserId = ConnectionService.instance.currentUserId;
-    if (currentUserId == null) return;
-
+    final preview = message.text.length > 30 ? '${message.text.substring(0, 30)}...' : message.text;
+    print('💾 addMessage called: ${message.senderId} → ${message.receiverId}: "$preview"');
+    
     final convId = conversationIdFor(message.senderId, message.receiverId);
     _conversations.putIfAbsent(convId, () => []);
     _conversations[convId]!.add(message);
+    print('   Conversation $convId now has ${_conversations[convId]!.length} messages');
     notifyListeners();
   }
 
@@ -452,9 +520,11 @@ class ChatServiceV3 extends ChangeNotifier {
     return _conversations[convId] ?? [];
   }
 
-  /// Get all conversation summaries
+  /// Get all conversation summaries (sorted by most recent)
   List<ConversationSummary> getConversationSummaries(String currentUserId) {
     final summaries = <ConversationSummary>[];
+    
+    print('🟣 [ChatService] Building conversation summaries (${_conversations.length} conversations)');
 
     for (final entry in _conversations.entries) {
       if (entry.value.isEmpty) continue;
@@ -462,14 +532,16 @@ class ChatServiceV3 extends ChangeNotifier {
       final messages = entry.value;
       final lastMsg = messages.last;
       final otherUserId = lastMsg.senderId == currentUserId ? lastMsg.receiverId : lastMsg.senderId;
+      final unreadCount = _unreadCounts[entry.key] ?? 0;
 
       summaries.add(ConversationSummary(
         otherUserId: otherUserId,
         otherUserName: _userNames[otherUserId] ?? otherUserId,
         lastMessageText: lastMsg.text,
         lastMessageTime: lastMsg.timestamp,
-        unreadCount: _unreadCounts[entry.key] ?? 0,
+        unreadCount: unreadCount,
       ));
+      print('🟣 [ChatService]   - $otherUserId: "${lastMsg.text.substring(0, 30)}..." ($unreadCount unread)');
     }
 
     // Sort by last message time descending

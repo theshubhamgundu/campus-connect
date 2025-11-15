@@ -719,6 +719,21 @@ void _handleSocket(ServerState state, WebSocket ws, String clientIp) {
         case 'chat_message':
           _handleChatMessage(state, ws, msg);
           break;
+        case 'file_message':
+          _handleFileMessage(state, ws, msg);
+          break;
+        case 'group_create':
+          _handleGroupCreate(state, ws, msg);
+          break;
+        case 'group_message':
+          _handleGroupMessage(state, ws, msg);
+          break;
+        case 'group_add_member':
+          _handleGroupAddMember(state, ws, msg);
+          break;
+        case 'group_leave':
+          _handleGroupLeave(state, ws, msg);
+          break;
         // WebRTC signaling pass-through for LAN calls
         case 'call_invite':
         case 'call_accept':
@@ -939,6 +954,267 @@ void _handleChatMessage(ServerState state, WebSocket ws, Map<String, dynamic> ms
     _send(ws, {'type': 'chat_message_ack', 'status': 'offline', 'from': from, 'to': to, 'error': 'User offline'});
     print('💤 Chat offline: $from → $to (recipient not online)');
   }
+}
+
+// Handle file_message type for end-to-end file transfer
+void _handleFileMessage(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+  
+  final from = fromClient.userId!;
+  final to = (msg['to'] ?? '').toString();
+  final fileName = (msg['fileName'] ?? 'file').toString();
+  final fileType = (msg['fileType'] ?? 'application/octet-stream').toString();
+  final timestamp = (msg['timestamp'] ?? DateTime.now().toIso8601String()).toString();
+  
+  if (to.isEmpty || fileName.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_file_message'});
+    return;
+  }
+  
+  // Forward file message to target user
+  // Note: iv/ciphertext are optional (may be encrypted or plaintext)
+  final Map<String, dynamic> payload = {
+    'type': 'file_message',
+    'from': from,
+    'to': to,
+    'fileName': fileName,
+    'fileType': fileType,
+    'timestamp': timestamp,
+  };
+  
+  // Include encrypted content if present
+  if (msg.containsKey('iv') && msg.containsKey('ciphertext')) {
+    payload['iv'] = msg['iv'];
+    payload['ciphertext'] = msg['ciphertext'];
+    payload['__encrypted'] = true;
+  } else if (msg.containsKey('fileData')) {
+    // Plaintext file data (for compatibility)
+    payload['fileData'] = msg['fileData'];
+  }
+  
+  // Route to target user
+  final targetSocket = state.userSocket[to];
+  if (targetSocket != null) {
+    targetSocket.add(jsonEncode(payload));
+    _send(ws, {'type': 'file_message_ack', 'status': 'delivered', 'from': from, 'to': to, 'fileName': fileName});
+    print('📁 File: $from → $to: "$fileName" (${fileType})');
+  } else {
+    // User offline - notify sender
+    _send(ws, {'type': 'file_message_ack', 'status': 'offline', 'from': from, 'to': to, 'fileName': fileName, 'error': 'User offline'});
+    print('📤 File queued (offline): $from → $to: "$fileName"');
+  }
+}
+
+// Global map to store groups: groupId -> {groupName, memberIds, createdBy, createdAt}
+final Map<String, Map<String, dynamic>> _groups = {};
+
+// Handle group creation
+void _handleGroupCreate(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+
+  final groupId = (msg['groupId'] ?? '').toString();
+  final groupName = (msg['groupName'] ?? 'Group').toString();
+  final description = (msg['description'] ?? '').toString();
+  final memberIds = List<String>.from(msg['memberIds'] as List? ?? []);
+  final timestamp = (msg['timestamp'] ?? DateTime.now().toIso8601String()).toString();
+
+  if (groupId.isEmpty || groupName.isEmpty || memberIds.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_group_data'});
+    return;
+  }
+
+  // Store group
+  _groups[groupId] = {
+    'name': groupName,
+    'description': description,
+    'memberIds': memberIds,
+    'createdBy': fromClient.userId,
+    'createdAt': timestamp,
+  };
+
+  // Broadcast group creation to all members
+  final payload = {
+    'type': 'group_created',
+    'groupId': groupId,
+    'groupName': groupName,
+    'description': description,
+    'memberIds': memberIds,
+    'createdBy': fromClient.userId,
+    'timestamp': timestamp,
+  };
+
+  for (final memberId in memberIds) {
+    final memberSocket = state.userSocket[memberId];
+    if (memberSocket != null) {
+      memberSocket.add(jsonEncode(payload));
+    }
+  }
+
+  print('🎯 Group created: $groupId - $groupName (${memberIds.length} members)');
+  _send(ws, {'type': 'group_create_ack', 'status': 'created', 'groupId': groupId});
+}
+
+// Handle group message
+void _handleGroupMessage(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+
+  final from = fromClient.userId!;
+  final groupId = (msg['groupId'] ?? '').toString();
+  String messageText = '';
+  final timestamp = (msg['timestamp'] ?? DateTime.now().toIso8601String()).toString();
+
+  // Check if encrypted
+  if (msg.containsKey('iv') && msg.containsKey('ciphertext')) {
+    // Message is encrypted, don't decrypt on server - just forward
+    messageText = '[Encrypted message]';
+  } else {
+    messageText = (msg['message'] ?? '').toString();
+  }
+
+  if (groupId.isEmpty || messageText.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_group_message'});
+    return;
+  }
+
+  // Get group members
+  final group = _groups[groupId];
+  if (group == null) {
+    _send(ws, {'type': 'error', 'error': 'group_not_found'});
+    return;
+  }
+
+  final memberIds = List<String>.from(group['memberIds'] as List? ?? []);
+
+  // Forward message to all group members
+  final Map<String, dynamic> payload = {
+    'type': 'group_message',
+    'groupId': groupId,
+    'from': from,
+    'message': msg['message'] ?? messageText,
+    'timestamp': timestamp,
+  };
+
+  // Include encrypted fields if present
+  if (msg.containsKey('iv') && msg.containsKey('ciphertext')) {
+    payload['iv'] = msg['iv'];
+    payload['ciphertext'] = msg['ciphertext'];
+    payload['__encrypted'] = true;
+  }
+
+  int delivered = 0;
+  for (final memberId in memberIds) {
+    if (memberId != from) {  // Don't send back to sender
+      final memberSocket = state.userSocket[memberId];
+      if (memberSocket != null) {
+        memberSocket.add(jsonEncode(payload));
+        delivered++;
+      }
+    }
+  }
+
+  print('💬 Group message: $from in group $groupId to $delivered members');
+  _send(ws, {'type': 'group_message_ack', 'status': 'delivered', 'groupId': groupId, 'delivered': delivered});
+}
+
+// Handle adding member to group
+void _handleGroupAddMember(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+
+  final groupId = (msg['groupId'] ?? '').toString();
+  final userId = (msg['userId'] ?? '').toString();
+
+  if (groupId.isEmpty || userId.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_member_data'});
+    return;
+  }
+
+  final group = _groups[groupId];
+  if (group == null) {
+    _send(ws, {'type': 'error', 'error': 'group_not_found'});
+    return;
+  }
+
+  final memberIds = List<String>.from(group['memberIds'] as List? ?? []);
+  if (!memberIds.contains(userId)) {
+    memberIds.add(userId);
+    _groups[groupId]!['memberIds'] = memberIds;
+
+    // Notify all members about new member
+    final payload = {
+      'type': 'group_member_joined',
+      'groupId': groupId,
+      'userId': userId,
+    };
+
+    for (final memberId in memberIds) {
+      final memberSocket = state.userSocket[memberId];
+      if (memberSocket != null) {
+        memberSocket.add(jsonEncode(payload));
+      }
+    }
+
+    print('👤 Member added to group $groupId: $userId');
+  }
+
+  _send(ws, {'type': 'group_add_member_ack', 'status': 'added', 'groupId': groupId, 'userId': userId});
+}
+
+// Handle member leaving group
+void _handleGroupLeave(ServerState state, WebSocket ws, Map<String, dynamic> msg) {
+  final fromClient = state.clients[ws];
+  if (fromClient == null || fromClient.userId == null) {
+    _send(ws, {'type': 'error', 'error': 'not_logged_in'});
+    return;
+  }
+
+  final groupId = (msg['groupId'] ?? '').toString();
+  final userId = fromClient.userId!;
+
+  if (groupId.isEmpty) {
+    _send(ws, {'type': 'error', 'error': 'invalid_group_id'});
+    return;
+  }
+
+  final group = _groups[groupId];
+  if (group != null) {
+    final memberIds = List<String>.from(group['memberIds'] as List? ?? []);
+    memberIds.remove(userId);
+    _groups[groupId]!['memberIds'] = memberIds;
+
+    // Notify remaining members
+    final payload = {
+      'type': 'group_member_left',
+      'groupId': groupId,
+      'userId': userId,
+    };
+
+    for (final memberId in memberIds) {
+      final memberSocket = state.userSocket[memberId];
+      if (memberSocket != null) {
+        memberSocket.add(jsonEncode(payload));
+      }
+    }
+
+    print('👋 Member left group $groupId: $userId');
+  }
+
+  _send(ws, {'type': 'group_leave_ack', 'status': 'left', 'groupId': groupId});
 }
 
 void _handleTyping(ServerState state, WebSocket ws, Map<String, dynamic> msg) {

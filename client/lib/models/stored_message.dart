@@ -67,9 +67,9 @@ class StoredMessage {
     };
   }
 
-  /// Get conversation ID (sorted pair of userIds)
+  /// Get conversation ID (sorted pair of userIds) - must match ChatServiceV3.conversationIdFor
   static String getConversationId(String userA, String userB) {
     final ids = [userA, userB]..sort();
-    return 'conv_${ids.join('_')}';
+    return ids.join('_');
   }
 }

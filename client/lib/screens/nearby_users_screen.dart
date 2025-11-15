@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/connection_service.dart';
-import '../services/chat_service_v2.dart';
+import '../services/chat_service_v3.dart';
 import '../models/online_user.dart';
 import 'direct_chat_screen_v2.dart';
 
@@ -26,24 +26,27 @@ class _NearbyUsersScreenState extends State<NearbyUsersScreen> {
     setState(() => _loading = true);
     try {
       final users = await ConnectionService.instance.fetchOnlineUsers();
-      
-      // FIX #3: Filter out the current user using both userId AND IP
-      // This ensures that:
-      // - If multiple users have the same ID but different IPs, only hide the current device
-      // - Other users with the same ID are still visible
       final currentUserId = ConnectionService.instance.currentUserId;
-      final currentDeviceIp = ConnectionService.instance.localDeviceIp;
       
+      print('🔍 Fetched ${users.length} users from server');
+      print('   Current logged-in user: $currentUserId');
+      for (final u in users) {
+        print('   - ${u.userId} (${u.name}) at ${u.ip}');
+      }
+      
+      // Filter out the current user by userId only
       final filteredUsers = users.where((u) {
-        // A user is "self" only if BOTH userId AND IP match
-        final isSelf = (u.userId == currentUserId && u.ip == currentDeviceIp);
-        return !isSelf;
+        final isMe = u.userId == currentUserId;
+        if (isMe) {
+          print('   ❌ Filtering out self: $currentUserId');
+        }
+        return !isMe;
       }).toList();
       
-      print('🔍 Loaded ${users.length} users, filtered to ${filteredUsers.length} (self: $currentUserId@$currentDeviceIp)');
+      print('✅ After filtering: ${filteredUsers.length} users remaining');
       setState(() => _users = filteredUsers);
     } catch (e) {
-      print('Error loading users: $e');
+      print('❌ Error loading users: $e');
       setState(() => _users = []);
     } finally {
       setState(() => _loading = false);
@@ -76,9 +79,13 @@ class _NearbyUsersScreenState extends State<NearbyUsersScreen> {
                       subtitle: Text('${u.role} • ${u.ip}'),
                       leading: CircleAvatar(child: Text(u.name.isNotEmpty ? u.name[0] : '?')),
                       onTap: () {
+                        print('👉 TAPPED USER: ${u.userId} - ${u.name}');
+                        
                         // Enrich ChatService with user name
-                        Provider.of<ChatServiceV2>(context, listen: false)
-                            .setUserInfo(u.userId, u.name);
+                        Provider.of<ChatServiceV3>(context, listen: false)
+                            .setUserName(u.userId, u.name);
+                        
+                        print('📱 Navigating to DirectChatScreenV2...');
                         
                         // Navigate to direct chat with this user
                         Navigator.push(
@@ -89,7 +96,9 @@ class _NearbyUsersScreenState extends State<NearbyUsersScreen> {
                               receiverName: u.name,
                             ),
                           ),
-                        );
+                        ).then((result) {
+                          print('✅ Returned from chat screen');
+                        });
                       },
                     );
                   },
